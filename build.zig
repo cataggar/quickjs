@@ -30,7 +30,11 @@ pub fn build(b: *std.Build) void {
     };
 
     // ----- libquickjs (static) -----------------------------------------
+    // The library's root is a Zig file that pulls in the ported modules; the
+    // remaining C sources are compiled into the same artifact and link against
+    // the exported C-ABI symbols.
     const lib_mod = b.createModule(.{
+        .root_source_file = b.path("zig_root.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
