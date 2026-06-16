@@ -29,3 +29,7 @@ unicode_gen
 run_octane
 run_sunspider_like
 libwinpthread*.dll
+
+# Zig build artifacts
+zig-out/
+.zig-cache/
