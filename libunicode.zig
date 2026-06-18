@@ -291,3 +291,227 @@ export fn lre_is_id_continue(c: u32) callconv(.c) c_int {
         @intCast(utab.unicode_prop_ID_Continue1_index.len / 3),
     ));
 }
+
+// ---------------------------------------------------------------------------
+// Case conversion / canonicalization (lre_case_conv, lre_canonicalize).
+//
+// The exported entry points are ported here; the static helpers lre_case_conv1,
+// lre_case_conv_entry and lre_case_folding_entry have private Zig copies (the C
+// originals stay in libunicode.c, still used by cr_regexp_canonicalize).
+// Tables: case_conv_table1 (u32), case_conv_table2 (u8), case_conv_ext (u16).
+// ---------------------------------------------------------------------------
+
+const LRE_CC_RES_LEN_MAX = 3;
+
+// RUN_TYPE_* enum (libunicode.c)
+const RUN_TYPE_U: u32 = 0;
+const RUN_TYPE_L: u32 = 1;
+const RUN_TYPE_UF: u32 = 2;
+const RUN_TYPE_LF: u32 = 3;
+const RUN_TYPE_UL: u32 = 4;
+const RUN_TYPE_LSU: u32 = 5;
+const RUN_TYPE_U2L_399_EXT2: u32 = 6;
+const RUN_TYPE_UF_D20: u32 = 7;
+const RUN_TYPE_UF_D1_EXT: u32 = 8;
+const RUN_TYPE_U_EXT: u32 = 9;
+const RUN_TYPE_LF_EXT: u32 = 10;
+const RUN_TYPE_UF_EXT2: u32 = 11;
+const RUN_TYPE_LF_EXT2: u32 = 12;
+const RUN_TYPE_UF_EXT3: u32 = 13;
+
+inline fn t1(i: u32) u32 {
+    return utab.case_conv_table1[i];
+}
+inline fn t2(i: u32) u32 {
+    return @as(u32, utab.case_conv_table2[i]);
+}
+inline fn ext(i: u32) u32 {
+    return @as(u32, utab.case_conv_ext[i]);
+}
+
+fn lre_case_conv1(c: u32, conv_type: c_int) u32 {
+    var res: [LRE_CC_RES_LEN_MAX]u32 = undefined;
+    _ = lre_case_conv(&res, c, conv_type);
+    return res[0];
+}
+
+// case conversion using the table entry 'idx' with value 'v'
+fn lre_case_conv_entry(res: [*c]u32, c_in: u32, conv_type: c_int, idx: u32, v: u32) c_int {
+    var c = c_in;
+    const is_lower: u32 = if (conv_type != 0) 1 else 0;
+    const typ: u32 = (v >> (32 - 17 - 7 - 4)) & 0xf;
+    const data: u32 = ((v & 0xf) << 8) | t2(idx);
+    const code: u32 = v >> (32 - 17);
+    switch (typ) {
+        RUN_TYPE_U, RUN_TYPE_L, RUN_TYPE_UF, RUN_TYPE_LF => {
+            if (conv_type == @as(c_int, @intCast(typ & 1)) or
+                (typ >= RUN_TYPE_UF and conv_type == 2))
+            {
+                c = c -% code +% (t1(data) >> (32 - 17));
+            }
+        },
+        RUN_TYPE_UL => {
+            const a = c -% code;
+            if ((a & 1) == (1 -% is_lower)) {
+                c = (a ^ 1) +% code;
+            }
+        },
+        RUN_TYPE_LSU => {
+            const a = c -% code;
+            if (a == 1) {
+                c = c +% (2 *% is_lower -% 1);
+            } else if (a == (1 -% is_lower) *% 2) {
+                c = c +% ((2 *% is_lower -% 1) *% 2);
+            }
+        },
+        RUN_TYPE_U2L_399_EXT2 => {
+            if (is_lower == 0) {
+                res[0] = c -% code +% ext(data >> 6);
+                res[1] = 0x399;
+                return 2;
+            } else {
+                c = c -% code +% ext(data & 0x3f);
+            }
+        },
+        RUN_TYPE_UF_D20 => {
+            if (conv_type != 1) {
+                c = data +% (if (conv_type == 2) @as(u32, 0x20) else 0);
+            }
+        },
+        RUN_TYPE_UF_D1_EXT => {
+            if (conv_type != 1) {
+                c = ext(data) +% (if (conv_type == 2) @as(u32, 1) else 0);
+            }
+        },
+        RUN_TYPE_U_EXT, RUN_TYPE_LF_EXT => {
+            if (is_lower == (typ -% RUN_TYPE_U_EXT)) {
+                c = ext(data);
+            }
+        },
+        RUN_TYPE_LF_EXT2 => {
+            if (is_lower != 0) {
+                res[0] = c -% code +% ext(data >> 6);
+                res[1] = ext(data & 0x3f);
+                return 2;
+            }
+        },
+        RUN_TYPE_UF_EXT2 => {
+            if (conv_type != 1) {
+                res[0] = c -% code +% ext(data >> 6);
+                res[1] = ext(data & 0x3f);
+                if (conv_type == 2) {
+                    // convert to lower
+                    res[0] = lre_case_conv1(res[0], 1);
+                    res[1] = lre_case_conv1(res[1], 1);
+                }
+                return 2;
+            }
+        },
+        // RUN_TYPE_UF_EXT3 shares the C 'default' body, so it falls to else.
+        else => {
+            if (conv_type != 1) {
+                res[0] = ext(data >> 8);
+                res[1] = ext((data >> 4) & 0xf);
+                res[2] = ext(data & 0xf);
+                if (conv_type == 2) {
+                    // convert to lower
+                    res[0] = lre_case_conv1(res[0], 1);
+                    res[1] = lre_case_conv1(res[1], 1);
+                    res[2] = lre_case_conv1(res[2], 1);
+                }
+                return 3;
+            }
+        },
+    }
+    res[0] = c;
+    return 1;
+}
+
+// conv_type: 0 = to upper, 1 = to lower, 2 = case folding
+export fn lre_case_conv(res: [*c]u32, c_in: u32, conv_type: c_int) callconv(.c) c_int {
+    var c = c_in;
+    if (c < 128) {
+        if (conv_type != 0) {
+            if (c >= 'A' and c <= 'Z') c = c - 'A' + 'a';
+        } else {
+            if (c >= 'a' and c <= 'z') c = c - 'a' + 'A';
+        }
+    } else {
+        var idx_min: c_int = 0;
+        var idx_max: c_int = @as(c_int, @intCast(utab.case_conv_table1.len)) - 1;
+        while (idx_min <= idx_max) {
+            const idx: c_int = @intCast(@as(c_uint, @intCast(idx_max + idx_min)) / 2);
+            const v = t1(@intCast(idx));
+            const code = v >> (32 - 17);
+            const len = (v >> (32 - 17 - 7)) & 0x7f;
+            if (c < code) {
+                idx_max = idx - 1;
+            } else if (c >= code + len) {
+                idx_min = idx + 1;
+            } else {
+                return lre_case_conv_entry(res, c, conv_type, @intCast(idx), v);
+            }
+        }
+    }
+    res[0] = c;
+    return 1;
+}
+
+fn lre_case_folding_entry(c_in: u32, idx: u32, v: u32, is_unicode: c_int) c_int {
+    var c = c_in;
+    var res: [LRE_CC_RES_LEN_MAX]u32 = undefined;
+    if (is_unicode != 0) {
+        const len = lre_case_conv_entry(&res, c, 2, idx, v);
+        if (len == 1) {
+            c = res[0];
+        } else {
+            // handle the few specific multi-character cases
+            if (c == 0xfb06) {
+                c = 0xfb05;
+            } else if (c == 0x01fd3) {
+                c = 0x390;
+            } else if (c == 0x01fe3) {
+                c = 0x3b0;
+            }
+        }
+    } else {
+        if (c < 128) {
+            if (c >= 'a' and c <= 'z') c = c - 'a' + 'A';
+        } else {
+            // legacy regexp: to upper case if single char >= 128
+            const len = lre_case_conv_entry(&res, c, 0, idx, v);
+            if (len == 1 and res[0] >= 128) c = res[0];
+        }
+    }
+    return @intCast(c);
+}
+
+// JS regexp specific rules for case folding
+export fn lre_canonicalize(c_in: u32, is_unicode: c_int) callconv(.c) c_int {
+    var c = c_in;
+    if (c < 128) {
+        // fast case
+        if (is_unicode != 0) {
+            if (c >= 'A' and c <= 'Z') c = c - 'A' + 'a';
+        } else {
+            if (c >= 'a' and c <= 'z') c = c - 'a' + 'A';
+        }
+    } else {
+        var idx_min: c_int = 0;
+        var idx_max: c_int = @as(c_int, @intCast(utab.case_conv_table1.len)) - 1;
+        while (idx_min <= idx_max) {
+            const idx: c_int = @intCast(@as(c_uint, @intCast(idx_max + idx_min)) / 2);
+            const v = t1(@intCast(idx));
+            const code = v >> (32 - 17);
+            const len = (v >> (32 - 17 - 7)) & 0x7f;
+            if (c < code) {
+                idx_max = idx - 1;
+            } else if (c >= code + len) {
+                idx_min = idx + 1;
+            } else {
+                return lre_case_folding_entry(c, @intCast(idx), v, is_unicode);
+            }
+        }
+    }
+    return @intCast(c);
+}

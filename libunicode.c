@@ -153,41 +153,8 @@ static int lre_case_conv_entry(uint32_t *res, uint32_t c, int conv_type, uint32_
    1 = to lower
    2 = case folding (= to lower with modifications)
 */
-int lre_case_conv(uint32_t *res, uint32_t c, int conv_type)
-{
-    if (c < 128) {
-        if (conv_type) {
-            if (c >= 'A' && c <= 'Z') {
-                c = c - 'A' + 'a';
-            }
-        } else {
-            if (c >= 'a' && c <= 'z') {
-                c = c - 'a' + 'A';
-            }
-        }
-    } else {
-        uint32_t v, code, len;
-        int idx, idx_min, idx_max;
-
-        idx_min = 0;
-        idx_max = countof(case_conv_table1) - 1;
-        while (idx_min <= idx_max) {
-            idx = (unsigned)(idx_max + idx_min) / 2;
-            v = case_conv_table1[idx];
-            code = v >> (32 - 17);
-            len = (v >> (32 - 17 - 7)) & 0x7f;
-            if (c < code) {
-                idx_max = idx - 1;
-            } else if (c >= code + len) {
-                idx_min = idx + 1;
-            } else {
-                return lre_case_conv_entry(res, c, conv_type, idx, v);
-            }
-        }
-    }
-    res[0] = c;
-    return 1;
-}
+/* lre_case_conv is ported to Zig (libunicode.zig). The static helpers above
+   (lre_case_conv1/entry) stay here, still used by cr_regexp_canonicalize. */
 
 static int lre_case_folding_entry(uint32_t c, uint32_t idx, uint32_t v, BOOL is_unicode)
 {
@@ -223,42 +190,7 @@ static int lre_case_folding_entry(uint32_t c, uint32_t idx, uint32_t v, BOOL is_
     return c;
 }
 
-/* JS regexp specific rules for case folding */
-int lre_canonicalize(uint32_t c, BOOL is_unicode)
-{
-    if (c < 128) {
-        /* fast case */
-        if (is_unicode) {
-            if (c >= 'A' && c <= 'Z') {
-                c = c - 'A' + 'a';
-            }
-        } else {
-            if (c >= 'a' && c <= 'z') {
-                c = c - 'a' + 'A';
-            }
-        }
-    } else {
-        uint32_t v, code, len;
-        int idx, idx_min, idx_max;
-
-        idx_min = 0;
-        idx_max = countof(case_conv_table1) - 1;
-        while (idx_min <= idx_max) {
-            idx = (unsigned)(idx_max + idx_min) / 2;
-            v = case_conv_table1[idx];
-            code = v >> (32 - 17);
-            len = (v >> (32 - 17 - 7)) & 0x7f;
-            if (c < code) {
-                idx_max = idx - 1;
-            } else if (c >= code + len) {
-                idx_min = idx + 1;
-            } else {
-                return lre_case_folding_entry(c, idx, v, is_unicode);
-            }
-        }
-    }
-    return c;
-}
+/* lre_canonicalize is ported to Zig (libunicode.zig). */
 
 static uint32_t get_le24(const uint8_t *ptr)
 {
