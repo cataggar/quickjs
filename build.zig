@@ -39,6 +39,9 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
     });
+    // Needed so @cImport in the ported Zig modules can find project headers
+    // (e.g. libunicode-table.h).
+    lib_mod.addIncludePath(b.path("."));
     lib_mod.addCSourceFiles(.{
         .files = &lib_c_sources,
         .flags = &c_flags,

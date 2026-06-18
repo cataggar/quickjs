@@ -301,80 +301,14 @@ static int get_index_pos(uint32_t *pcode, uint32_t c,
     return (idx_min + 1) * UNICODE_INDEX_BLOCK_LEN + (v >> 21);
 }
 
-static BOOL lre_is_in_table(uint32_t c, const uint8_t *table,
-                            const uint8_t *index_table, int index_table_len)
-{
-    uint32_t code, b, bit;
-    int pos;
-    const uint8_t *p;
-
-    pos = get_index_pos(&code, c, index_table, index_table_len);
-    if (pos < 0)
-        return FALSE; /* outside the table */
-    p = table + pos;
-    bit = 0;
-    /* Compressed run length encoding:
-       00..3F: 2 packed lengths: 3-bit + 3-bit
-       40..5F: 5-bits plus extra byte for length
-       60..7F: 5-bits plus 2 extra bytes for length
-       80..FF: 7-bit length
-       lengths must be incremented to get character count
-       Ranges alternate between false and true return value.
-     */
-    for(;;) {
-        b = *p++;
-        if (b < 64) {
-            code += (b >> 3) + 1;
-            if (c < code)
-                return bit;
-            bit ^= 1;
-            code += (b & 7) + 1;
-        } else if (b >= 0x80) {
-            code += b - 0x80 + 1;
-        } else if (b < 0x60) {
-            code += (((b - 0x40) << 8) | p[0]) + 1;
-            p++;
-        } else {
-            code += (((b - 0x60) << 16) | (p[0] << 8) | p[1]) + 1;
-            p += 2;
-        }
-        if (c < code)
-            return bit;
-        bit ^= 1;
-    }
-}
-
-BOOL lre_is_cased(uint32_t c)
-{
-    uint32_t v, code, len;
-    int idx, idx_min, idx_max;
-
-    idx_min = 0;
-    idx_max = countof(case_conv_table1) - 1;
-    while (idx_min <= idx_max) {
-        idx = (unsigned)(idx_max + idx_min) / 2;
-        v = case_conv_table1[idx];
-        code = v >> (32 - 17);
-        len = (v >> (32 - 17 - 7)) & 0x7f;
-        if (c < code) {
-            idx_max = idx - 1;
-        } else if (c >= code + len) {
-            idx_min = idx + 1;
-        } else {
-            return TRUE;
-        }
-    }
-    return lre_is_in_table(c, unicode_prop_Cased1_table,
-                           unicode_prop_Cased1_index,
-                           sizeof(unicode_prop_Cased1_index) / 3);
-}
-
-BOOL lre_is_case_ignorable(uint32_t c)
-{
-    return lre_is_in_table(c, unicode_prop_Case_Ignorable_table,
-                           unicode_prop_Case_Ignorable_index,
-                           sizeof(unicode_prop_Case_Ignorable_index) / 3);
-}
+/*
+ * NOTE: lre_is_cased, lre_is_case_ignorable, lre_is_id_start and
+ * lre_is_id_continue have been ported to Zig (see libunicode.zig). They read
+ * the same generated tables via @cImport, and carry private copies of the
+ * helpers get_le24, get_index_pos and lre_is_in_table. get_le24/get_index_pos
+ * remain here too (still used by other C functions); lre_is_in_table had no
+ * other C callers and was removed.
+ */
 
 /* character range */
 
@@ -594,20 +528,7 @@ int cr_regexp_canonicalize(CharRange *cr, BOOL is_unicode)
 
 #ifdef CONFIG_ALL_UNICODE
 
-BOOL lre_is_id_start(uint32_t c)
-{
-    return lre_is_in_table(c, unicode_prop_ID_Start_table,
-                           unicode_prop_ID_Start_index,
-                           sizeof(unicode_prop_ID_Start_index) / 3);
-}
-
-BOOL lre_is_id_continue(uint32_t c)
-{
-    return lre_is_id_start(c) ||
-        lre_is_in_table(c, unicode_prop_ID_Continue1_table,
-                        unicode_prop_ID_Continue1_index,
-                        sizeof(unicode_prop_ID_Continue1_index) / 3);
-}
+/* lre_is_id_start and lre_is_id_continue are ported to Zig (libunicode.zig). */
 
 #define UNICODE_DECOMP_LEN_MAX 18
 
