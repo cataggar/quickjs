@@ -6,4 +6,5 @@
 
 comptime {
     _ = @import("cutils.zig");
+    _ = @import("libunicode.zig");
 }
