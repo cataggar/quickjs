@@ -1586,39 +1586,8 @@ uint8_t const lre_ctype_bits[256] = {
 #undef _
 #undef d
 
-/* code point ranges for Zs,Zl or Zp property */
-static const uint16_t char_range_s[] = {
-    10,
-    0x0009, 0x000D + 1,
-    0x0020, 0x0020 + 1,
-    0x00A0, 0x00A0 + 1,
-    0x1680, 0x1680 + 1,
-    0x2000, 0x200A + 1,
-    /* 2028;LINE SEPARATOR;Zl;0;WS;;;;;N;;;;; */
-    /* 2029;PARAGRAPH SEPARATOR;Zp;0;B;;;;;N;;;;; */
-    0x2028, 0x2029 + 1,
-    0x202F, 0x202F + 1,
-    0x205F, 0x205F + 1,
-    0x3000, 0x3000 + 1,
-    /* FEFF;ZERO WIDTH NO-BREAK SPACE;Cf;0;BN;;;;;N;BYTE ORDER MARK;;;; */
-    0xFEFF, 0xFEFF + 1,
-};
-
-BOOL lre_is_space_non_ascii(uint32_t c)
-{
-    size_t i, n;
-
-    n = countof(char_range_s);
-    for(i = 5; i < n; i += 2) {
-        uint32_t low = char_range_s[i];
-        uint32_t high = char_range_s[i + 1];
-        if (c < low)
-            return FALSE;
-        if (c < high)
-            return TRUE;
-    }
-    return FALSE;
-}
+/* lre_is_space_non_ascii (and its char_range_s table) are ported to Zig
+   (libunicode.zig). */
 
 #define SEQ_MAX_LEN 16
 

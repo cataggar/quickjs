@@ -515,3 +515,34 @@ export fn lre_canonicalize(c_in: u32, is_unicode: c_int) callconv(.c) c_int {
     }
     return @intCast(c);
 }
+
+// ---------------------------------------------------------------------------
+// lre_is_space_non_ascii — non-ASCII White_Space (Zs/Zl/Zp + BOM).
+// ---------------------------------------------------------------------------
+
+// code point ranges for Zs,Zl or Zp property
+const char_range_s = [_]u16{
+    10,
+    0x0009, 0x000D + 1,
+    0x0020, 0x0020 + 1,
+    0x00A0, 0x00A0 + 1,
+    0x1680, 0x1680 + 1,
+    0x2000, 0x200A + 1,
+    0x2028, 0x2029 + 1,
+    0x202F, 0x202F + 1,
+    0x205F, 0x205F + 1,
+    0x3000, 0x3000 + 1,
+    0xFEFF, 0xFEFF + 1,
+};
+
+export fn lre_is_space_non_ascii(c: u32) callconv(.c) c_int {
+    const n = char_range_s.len;
+    var i: usize = 5;
+    while (i < n) : (i += 2) {
+        const low: u32 = char_range_s[i];
+        const high: u32 = char_range_s[i + 1];
+        if (c < low) return 0;
+        if (c < high) return 1;
+    }
+    return 0;
+}
