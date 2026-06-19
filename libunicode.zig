@@ -546,3 +546,453 @@ export fn lre_is_space_non_ascii(c: u32) callconv(.c) c_int {
     }
     return 0;
 }
+
+// ---------------------------------------------------------------------------
+// Unicode normalization (NFC/NFD/NFKC/NFKD): unicode_normalize and its private
+// helpers. Tables: unicode_decomp_table1 (u32), unicode_decomp_table2 (u16),
+// unicode_decomp_data (u8), unicode_comp_table (u16), unicode_cc_table/index.
+// ---------------------------------------------------------------------------
+
+const DynBuf = extern struct {
+    buf: [*c]u8,
+    size: usize,
+    allocated_size: usize,
+    err: c_int,
+    realloc_func: ?*const DynBufReallocFunc,
+    opaque_ptr: ?*anyopaque,
+};
+
+extern fn dbuf_init2(s: *DynBuf, opaque_ptr: ?*anyopaque, realloc_func: ?*const DynBufReallocFunc) callconv(.c) void;
+extern fn dbuf_claim(s: *DynBuf, len: usize) callconv(.c) c_int;
+extern fn __dbuf_put_u32(s: *DynBuf, val: u32) callconv(.c) c_int;
+
+inline fn dbuf_put_u32(s: *DynBuf, val: u32) void {
+    _ = __dbuf_put_u32(s, val);
+}
+
+const UNICODE_NFC: c_int = 0;
+const UNICODE_DECOMP_LEN_MAX = 18;
+
+// translate-c can't translate the larger generated tables, so they are reached
+// through external pointer symbols defined in libunicode.c.
+extern const zig_unicode_cc_table: [*]const u8;
+extern const zig_unicode_cc_index: [*]const u8;
+extern const zig_unicode_cc_index_len: c_int;
+extern const zig_unicode_decomp_table1: [*]const u32;
+extern const zig_unicode_decomp_table1_len: c_int;
+extern const zig_unicode_decomp_table2: [*]const u16;
+extern const zig_unicode_decomp_data: [*]const u8;
+extern const zig_unicode_comp_table: [*]const u16;
+extern const zig_unicode_comp_table_len: c_int;
+
+// DecompTypeEnum
+const DECOMP_TYPE_C1: u32 = 0;
+const DECOMP_TYPE_L1: u32 = 1;
+const DECOMP_TYPE_L2: u32 = 2;
+const DECOMP_TYPE_L3: u32 = 3;
+const DECOMP_TYPE_L4: u32 = 4;
+const DECOMP_TYPE_L5: u32 = 5;
+const DECOMP_TYPE_L6: u32 = 6;
+const DECOMP_TYPE_L7: u32 = 7;
+const DECOMP_TYPE_LL1: u32 = 8;
+const DECOMP_TYPE_LL2: u32 = 9;
+const DECOMP_TYPE_S1: u32 = 10;
+const DECOMP_TYPE_S2: u32 = 11;
+const DECOMP_TYPE_S3: u32 = 12;
+const DECOMP_TYPE_S4: u32 = 13;
+const DECOMP_TYPE_S5: u32 = 14;
+const DECOMP_TYPE_I1: u32 = 15;
+const DECOMP_TYPE_I2_0: u32 = 16;
+const DECOMP_TYPE_I2_1: u32 = 17;
+const DECOMP_TYPE_I3_1: u32 = 18;
+const DECOMP_TYPE_I3_2: u32 = 19;
+const DECOMP_TYPE_I4_1: u32 = 20;
+const DECOMP_TYPE_I4_2: u32 = 21;
+const DECOMP_TYPE_B1: u32 = 22;
+const DECOMP_TYPE_B2: u32 = 23;
+const DECOMP_TYPE_B3: u32 = 24;
+const DECOMP_TYPE_B4: u32 = 25;
+const DECOMP_TYPE_B5: u32 = 26;
+const DECOMP_TYPE_B6: u32 = 27;
+const DECOMP_TYPE_B7: u32 = 28;
+const DECOMP_TYPE_B8: u32 = 29;
+const DECOMP_TYPE_B18: u32 = 30;
+const DECOMP_TYPE_LS2: u32 = 31;
+const DECOMP_TYPE_PAT3: u32 = 32;
+const DECOMP_TYPE_S2_UL: u32 = 33;
+const DECOMP_TYPE_LS2_UL: u32 = 34;
+
+fn unicode_get_short_code(c: u32) u32 {
+    const unicode_short_table = [2]u16{ 0x2044, 0x2215 };
+    if (c < 0x80) {
+        return c;
+    } else if (c < 0x80 + 0x50) {
+        return c - 0x80 + 0x300;
+    } else {
+        return @as(u32, unicode_short_table[c - 0x80 - 0x50]);
+    }
+}
+
+fn unicode_get_lower_simple(c_in: u32) u32 {
+    var c = c_in;
+    if (c < 0x100 or (c >= 0x410 and c <= 0x42f)) {
+        c += 0x20;
+    } else {
+        c += 1;
+    }
+    return c;
+}
+
+fn unicode_get16(p: [*]const u8) u32 {
+    return @as(u32, p[0]) | (@as(u32, p[1]) << 8);
+}
+
+fn unicode_decomp_entry(res: [*c]u32, c_in: u32, idx: c_int, code: u32, len: u32, typ: u32) c_int {
+    var c = c_in;
+    if (typ == DECOMP_TYPE_C1) {
+        res[0] = @as(u32, zig_unicode_decomp_table2[@intCast(idx)]);
+        return 1;
+    }
+    const base: [*]const u8 = zig_unicode_decomp_data;
+    var d = base + @as(usize, zig_unicode_decomp_table2[@intCast(idx)]);
+    switch (typ) {
+        DECOMP_TYPE_L1, DECOMP_TYPE_L2, DECOMP_TYPE_L3, DECOMP_TYPE_L4, DECOMP_TYPE_L5, DECOMP_TYPE_L6, DECOMP_TYPE_L7 => {
+            const l = typ - DECOMP_TYPE_L1 + 1;
+            d += @as(usize, (c - code) * l * 2);
+            var i: u32 = 0;
+            while (i < l) : (i += 1) {
+                res[i] = unicode_get16(d + @as(usize, 2 * i));
+                if (res[i] == 0) return 0;
+            }
+            return @intCast(l);
+        },
+        DECOMP_TYPE_LL1, DECOMP_TYPE_LL2 => {
+            const l = typ - DECOMP_TYPE_LL1 + 1;
+            var k: u32 = (c - code) * l;
+            const p: u32 = len * l * 2;
+            var i: u32 = 0;
+            while (i < l) : (i += 1) {
+                const shift: u3 = @intCast((k % 4) * 2);
+                const byte_val: u8 = d[@as(usize, p + (k / 4))];
+                const hi: u32 = (@as(u32, (byte_val >> shift) & 3) << 16);
+                const c1 = unicode_get16(d + @as(usize, 2 * k)) | hi;
+                if (c1 == 0) return 0;
+                res[i] = c1;
+                k += 1;
+            }
+            return @intCast(l);
+        },
+        DECOMP_TYPE_S1, DECOMP_TYPE_S2, DECOMP_TYPE_S3, DECOMP_TYPE_S4, DECOMP_TYPE_S5 => {
+            const l = typ - DECOMP_TYPE_S1 + 1;
+            d += @as(usize, (c - code) * l);
+            var i: u32 = 0;
+            while (i < l) : (i += 1) {
+                res[i] = unicode_get_short_code(d[i]);
+                if (res[i] == 0) return 0;
+            }
+            return @intCast(l);
+        },
+        DECOMP_TYPE_I1, DECOMP_TYPE_I2_0, DECOMP_TYPE_I2_1, DECOMP_TYPE_I3_1, DECOMP_TYPE_I3_2, DECOMP_TYPE_I4_1, DECOMP_TYPE_I4_2 => {
+            var l: u32 = undefined;
+            var p: u32 = undefined;
+            if (typ == DECOMP_TYPE_I1) {
+                l = 1;
+                p = 0;
+            } else {
+                l = 2 + ((typ - DECOMP_TYPE_I2_0) >> 1);
+                p = ((typ - DECOMP_TYPE_I2_0) & 1) + @intFromBool(l > 2);
+            }
+            var i: u32 = 0;
+            while (i < l) : (i += 1) {
+                var c1 = unicode_get16(d + @as(usize, 2 * i));
+                if (i == p) c1 += c - code;
+                res[i] = c1;
+            }
+            return @intCast(l);
+        },
+        DECOMP_TYPE_B1, DECOMP_TYPE_B2, DECOMP_TYPE_B3, DECOMP_TYPE_B4, DECOMP_TYPE_B5, DECOMP_TYPE_B6, DECOMP_TYPE_B7, DECOMP_TYPE_B8, DECOMP_TYPE_B18 => {
+            const l: u32 = if (typ == DECOMP_TYPE_B18) 18 else (typ - DECOMP_TYPE_B1 + 1);
+            const c_min = unicode_get16(d);
+            d += @as(usize, 2 + (c - code) * l);
+            var i: u32 = 0;
+            while (i < l) : (i += 1) {
+                var c1: u32 = d[i];
+                if (c1 == 0xff) {
+                    c1 = 0x20;
+                } else {
+                    c1 += c_min;
+                }
+                res[i] = c1;
+            }
+            return @intCast(l);
+        },
+        DECOMP_TYPE_LS2 => {
+            d += @as(usize, (c - code) * 3);
+            res[0] = unicode_get16(d);
+            if (res[0] == 0) return 0;
+            res[1] = unicode_get_short_code(d[2]);
+            return 2;
+        },
+        DECOMP_TYPE_PAT3 => {
+            res[0] = unicode_get16(d);
+            res[2] = unicode_get16(d + 2);
+            d += @as(usize, 4 + (c - code) * 2);
+            res[1] = unicode_get16(d);
+            return 3;
+        },
+        DECOMP_TYPE_S2_UL, DECOMP_TYPE_LS2_UL => {
+            const c1 = c - code;
+            if (typ == DECOMP_TYPE_S2_UL) {
+                d += @as(usize, c1 & ~@as(u32, 1));
+                c = unicode_get_short_code(d[0]);
+                d += 1;
+            } else {
+                d += @as(usize, (c1 >> 1) * 3);
+                c = unicode_get16(d);
+                d += 2;
+            }
+            if ((c1 & 1) != 0) c = unicode_get_lower_simple(c);
+            res[0] = c;
+            res[1] = unicode_get_short_code(d[0]);
+            return 2;
+        },
+        else => {},
+    }
+    return 0;
+}
+
+// return the length of the decomposition or 0 if no decomposition
+fn unicode_decomp_char(res: [*c]u32, c: u32, is_compat1: c_int) c_int {
+    var idx_min: c_int = 0;
+    var idx_max: c_int = @as(c_int, @intCast(zig_unicode_decomp_table1_len)) - 1;
+    while (idx_min <= idx_max) {
+        const idx = @divTrunc(idx_max + idx_min, 2);
+        const v = zig_unicode_decomp_table1[@intCast(idx)];
+        const code = v >> (32 - 18);
+        const len = (v >> (32 - 18 - 7)) & 0x7f;
+        if (c < code) {
+            idx_max = idx - 1;
+        } else if (c >= code + len) {
+            idx_min = idx + 1;
+        } else {
+            const is_compat = v & 1;
+            if (@as(u32, @intCast(is_compat1)) < is_compat) break;
+            const typ = (v >> (32 - 18 - 7 - 6)) & 0x3f;
+            return unicode_decomp_entry(res, c, idx, code, len, typ);
+        }
+    }
+    return 0;
+}
+
+// return 0 if no pair found
+fn unicode_compose_pair(c0: u32, c1: u32) c_int {
+    var idx_min: c_int = 0;
+    var idx_max: c_int = @as(c_int, @intCast(zig_unicode_comp_table_len)) - 1;
+    var pair: [2]u32 = undefined;
+    while (idx_min <= idx_max) {
+        const idx = @divTrunc(idx_max + idx_min, 2);
+        const idx1: u32 = zig_unicode_comp_table[@intCast(idx)];
+        // idx1 represents an entry of the decomposition table
+        const d_idx = idx1 >> 6;
+        const d_offset = idx1 & 0x3f;
+        const v = zig_unicode_decomp_table1[d_idx];
+        const code = v >> (32 - 18);
+        const len = (v >> (32 - 18 - 7)) & 0x7f;
+        const typ = (v >> (32 - 18 - 7 - 6)) & 0x3f;
+        const ch = code + d_offset;
+        _ = unicode_decomp_entry(&pair, ch, @intCast(d_idx), code, len, typ);
+        var d: c_int = @as(c_int, @intCast(c0)) - @as(c_int, @intCast(pair[0]));
+        if (d == 0) d = @as(c_int, @intCast(c1)) - @as(c_int, @intCast(pair[1]));
+        if (d < 0) {
+            idx_max = idx - 1;
+        } else if (d > 0) {
+            idx_min = idx + 1;
+        } else {
+            return @intCast(ch);
+        }
+    }
+    return 0;
+}
+
+// return the combining class of character c (between 0 and 255)
+fn unicode_get_cc(c: u32) c_int {
+    var code: u32 = undefined;
+    const pos = get_index_pos(&code, c, zig_unicode_cc_index, @divTrunc(zig_unicode_cc_index_len, 3));
+    if (pos < 0) return 0;
+    var p = zig_unicode_cc_table + @as(usize, @intCast(pos));
+    while (true) {
+        const b: u32 = p[0];
+        p += 1;
+        const typ = b >> 6;
+        var n = b & 0x3f;
+        if (n < 48) {
+            // n unchanged
+        } else if (n < 56) {
+            n = (n - 48) << 8;
+            n |= p[0];
+            p += 1;
+            n += 48;
+        } else {
+            n = (n - 56) << 8;
+            n |= @as(u32, p[0]) << 8;
+            p += 1;
+            n |= p[0];
+            p += 1;
+            n += 48 + (1 << 11);
+        }
+        if (typ <= 1) p += 1;
+        const c1 = code + n + 1;
+        if (c < c1) {
+            const cc: u32 = switch (typ) {
+                0 => (p - 1)[0],
+                1 => @as(u32, (p - 1)[0]) + c - code,
+                2 => 0,
+                else => 230,
+            };
+            return @intCast(cc);
+        }
+        code = c1;
+    }
+}
+
+fn sort_cc(buf: [*c]c_int, len: c_int) void {
+    var i: c_int = 0;
+    while (i < len) : (i += 1) {
+        const cc = unicode_get_cc(@bitCast(buf[@intCast(i)]));
+        if (cc != 0) {
+            const start = i;
+            var j = i + 1;
+            while (j < len) {
+                const ch1 = buf[@intCast(j)];
+                const cc1 = unicode_get_cc(@bitCast(ch1));
+                if (cc1 == 0) break;
+                var k = j - 1;
+                while (k >= start) {
+                    if (unicode_get_cc(@bitCast(buf[@intCast(k)])) <= cc1) break;
+                    buf[@intCast(k + 1)] = buf[@intCast(k)];
+                    k -= 1;
+                }
+                buf[@intCast(k + 1)] = ch1;
+                j += 1;
+            }
+            i = j;
+        }
+    }
+}
+
+fn to_nfd_rec(dbuf: *DynBuf, src: [*c]const c_int, src_len: c_int, is_compat: c_int) void {
+    var res: [UNICODE_DECOMP_LEN_MAX]u32 = undefined;
+    var i: c_int = 0;
+    while (i < src_len) : (i += 1) {
+        var c: u32 = @bitCast(src[@intCast(i)]);
+        if (c >= 0xac00 and c < 0xd7a4) {
+            // Hangul decomposition
+            c -= 0xac00;
+            dbuf_put_u32(dbuf, 0x1100 + c / 588);
+            dbuf_put_u32(dbuf, 0x1161 + (c % 588) / 28);
+            const v = c % 28;
+            if (v != 0) dbuf_put_u32(dbuf, 0x11a7 + v);
+        } else {
+            const l = unicode_decomp_char(&res, c, is_compat);
+            if (l != 0) {
+                to_nfd_rec(dbuf, @ptrCast(&res), l, is_compat);
+            } else {
+                dbuf_put_u32(dbuf, c);
+            }
+        }
+    }
+}
+
+// return 0 if not found
+fn compose_pair(c0: u32, c1: u32) c_int {
+    // Hangul composition
+    if (c0 >= 0x1100 and c0 < 0x1100 + 19 and c1 >= 0x1161 and c1 < 0x1161 + 21) {
+        return @intCast(0xac00 + (c0 - 0x1100) * 588 + (c1 - 0x1161) * 28);
+    } else if (c0 >= 0xac00 and c0 < 0xac00 + 11172 and (c0 - 0xac00) % 28 == 0 and
+        c1 >= 0x11a7 and c1 < 0x11a7 + 28)
+    {
+        return @intCast(c0 + c1 - 0x11a7);
+    } else {
+        return unicode_compose_pair(c0, c1);
+    }
+}
+
+export fn unicode_normalize(pdst: [*c][*c]u32, src: [*c]const u32, src_len: c_int, n_type: c_int, opaque_ptr: ?*anyopaque, realloc_func: ?*const DynBufReallocFunc) callconv(.c) c_int {
+    const is_compat: c_int = n_type >> 1;
+    var dbuf_s: DynBuf = undefined;
+    const dbuf = &dbuf_s;
+
+    dbuf_init2(dbuf, opaque_ptr, realloc_func);
+    if (dbuf_claim(dbuf, @sizeOf(c_int) * @as(usize, @intCast(src_len))) != 0) {
+        pdst.* = null;
+        return -1;
+    }
+
+    // common case: latin1 is unaffected by NFC
+    if (n_type == UNICODE_NFC) {
+        var latin1 = true;
+        var i: c_int = 0;
+        while (i < src_len) : (i += 1) {
+            if (src[@intCast(i)] >= 0x100) {
+                latin1 = false;
+                break;
+            }
+        }
+        if (latin1) {
+            const buf: [*c]c_int = @ptrCast(@alignCast(dbuf.buf));
+            if (src_len != 0)
+                _ = memcpy(@ptrCast(buf), @ptrCast(src), @as(usize, @intCast(src_len)) * @sizeOf(c_int));
+            pdst.* = @ptrCast(buf);
+            return src_len;
+        }
+    }
+
+    to_nfd_rec(dbuf, @ptrCast(src), src_len, is_compat);
+    if (dbuf.err != 0) {
+        pdst.* = null;
+        return -1;
+    }
+    const buf: [*c]c_int = @ptrCast(@alignCast(dbuf.buf));
+    const buf_len: c_int = @intCast(dbuf.size / @sizeOf(c_int));
+
+    sort_cc(buf, buf_len);
+
+    if (buf_len <= 1 or (n_type & 1) != 0) {
+        // NFD / NFKD
+        pdst.* = @ptrCast(buf);
+        return buf_len;
+    }
+
+    var i: c_int = 1;
+    var out_len: c_int = 1;
+    while (i < buf_len) {
+        // find the starter character and test if it is blocked from buf[i]
+        var last_cc = unicode_get_cc(@bitCast(buf[@intCast(i)]));
+        var starter_pos = out_len - 1;
+        var do_next = false;
+        while (starter_pos >= 0) {
+            const cc = unicode_get_cc(@bitCast(buf[@intCast(starter_pos)]));
+            if (cc == 0) break;
+            if (cc >= last_cc) {
+                do_next = true;
+                break;
+            }
+            last_cc = 256;
+            starter_pos -= 1;
+        }
+        if (!do_next and starter_pos >= 0) {
+            const p = compose_pair(@bitCast(buf[@intCast(starter_pos)]), @bitCast(buf[@intCast(i)]));
+            if (p != 0) {
+                buf[@intCast(starter_pos)] = p;
+                i += 1;
+                continue;
+            }
+        }
+        // next:
+        buf[@intCast(out_len)] = buf[@intCast(i)];
+        out_len += 1;
+        i += 1;
+    }
+    pdst.* = @ptrCast(buf);
+    return out_len;
+}
