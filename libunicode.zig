@@ -1200,3 +1200,258 @@ export fn cr_regexp_canonicalize(cr: *CharRange, is_unicode: c_int) callconv(.c)
     cr_free(&cr_sub);
     return if (ok) 0 else -1;
 }
+
+// ---------------------------------------------------------------------------
+// Script / general-category / property CharRange builders (table walkers).
+// The C dispatchers (unicode_general_category, unicode_prop) and the variadic
+// unicode_prop_ops still call these exported workers.
+// ---------------------------------------------------------------------------
+
+extern "c" fn strchr(s: [*c]const u8, c: c_int) [*c]const u8;
+extern "c" fn strlen(s: [*c]const u8) usize;
+extern "c" fn memcmp(a: ?*const anyopaque, b: ?*const anyopaque, n: usize) c_int;
+
+extern const zig_unicode_gc_table: [*]const u8;
+extern const zig_unicode_gc_table_len: c_int;
+extern const zig_unicode_prop_table: [*]const [*]const u8;
+extern const zig_unicode_prop_table_len: c_int;
+extern const zig_unicode_prop_len_table: [*]const u16;
+extern const zig_unicode_script_table: [*]const u8;
+extern const zig_unicode_script_table_len: c_int;
+extern const zig_unicode_script_ext_table: [*]const u8;
+extern const zig_unicode_script_ext_table_len: c_int;
+extern const zig_unicode_script_name_table: [*c]const u8;
+extern const zig_UNICODE_GC_Lu: c_int;
+extern const zig_UNICODE_GC_Ll: c_int;
+extern const zig_UNICODE_SCRIPT_Common: c_int;
+extern const zig_UNICODE_SCRIPT_Inherited: c_int;
+extern const zig_UNICODE_SCRIPT_Unknown: c_int;
+
+export fn unicode_find_name(name_table: [*c]const u8, name: [*c]const u8) callconv(.c) c_int {
+    var p = name_table;
+    var pos: c_int = 0;
+    const name_len = strlen(name);
+    while (p[0] != 0) {
+        while (true) {
+            const r = strchr(p, ',');
+            const len: usize = if (r == null) strlen(p) else @intFromPtr(r) - @intFromPtr(p);
+            if (len == name_len and memcmp(@ptrCast(p), @ptrCast(name), name_len) == 0)
+                return pos;
+            p += len + 1;
+            if (r == null) break;
+        }
+        pos += 1;
+    }
+    return -1;
+}
+
+export fn unicode_general_category1(cr: *CharRange, gc_mask: u32) callconv(.c) c_int {
+    const p = zig_unicode_gc_table;
+    const p_end: usize = @intCast(zig_unicode_gc_table_len);
+    const m_lu = @as(u32, 1) << @as(u5, @intCast(zig_UNICODE_GC_Lu));
+    const m_ll = @as(u32, 1) << @as(u5, @intCast(zig_UNICODE_GC_Ll));
+    var pi: usize = 0;
+    var c: u32 = 0;
+    while (pi < p_end) {
+        var b: u32 = p[pi];
+        pi += 1;
+        var n = b >> 5;
+        const v = b & 0x1f;
+        if (n == 7) {
+            n = p[pi];
+            pi += 1;
+            if (n < 128) {
+                n += 7;
+            } else if (n < 128 + 64) {
+                n = (n - 128) << 8;
+                n |= p[pi];
+                pi += 1;
+                n += 7 + 128;
+            } else {
+                n = (n - 128 - 64) << 16;
+                n |= @as(u32, p[pi]) << 8;
+                pi += 1;
+                n |= p[pi];
+                pi += 1;
+                n += 7 + 128 + (1 << 14);
+            }
+        }
+        const c0 = c;
+        c += n + 1;
+        if (v == 31) {
+            // run of Lu / Ll
+            b = gc_mask & (m_lu | m_ll);
+            if (b != 0) {
+                if (b == (m_lu | m_ll)) {
+                    if (cr_add_interval(cr, c0, c) != 0) return -1;
+                } else {
+                    var cc = c0 + @as(u32, @intFromBool((gc_mask & m_ll) != 0));
+                    while (cc < c) : (cc += 2) {
+                        if (cr_add_interval(cr, cc, cc + 1) != 0) return -1;
+                    }
+                }
+            }
+        } else if (((gc_mask >> @as(u5, @intCast(v))) & 1) != 0) {
+            if (cr_add_interval(cr, c0, c) != 0) return -1;
+        }
+    }
+    return 0;
+}
+
+export fn unicode_prop1(cr: *CharRange, prop_idx: c_int) callconv(.c) c_int {
+    const p = zig_unicode_prop_table[@intCast(prop_idx)];
+    const p_end: usize = zig_unicode_prop_len_table[@intCast(prop_idx)];
+    var pi: usize = 0;
+    var c: u32 = 0;
+    var bit: u32 = 0;
+    // Compressed range encoding; ranges alternate between false and true.
+    while (pi < p_end) {
+        var c0 = c;
+        const b: u32 = p[pi];
+        pi += 1;
+        if (b < 64) {
+            c += (b >> 3) + 1;
+            if (bit != 0) {
+                if (cr_add_interval(cr, c0, c) != 0) return -1;
+            }
+            bit ^= 1;
+            c0 = c;
+            c += (b & 7) + 1;
+        } else if (b >= 0x80) {
+            c += b - 0x80 + 1;
+        } else if (b < 0x60) {
+            c += (((b - 0x40) << 8) | p[pi]) + 1;
+            pi += 1;
+        } else {
+            c += (((b - 0x60) << 16) | (@as(u32, p[pi]) << 8) | p[pi + 1]) + 1;
+            pi += 2;
+        }
+        if (bit != 0) {
+            if (cr_add_interval(cr, c0, c) != 0) return -1;
+        }
+        bit ^= 1;
+    }
+    return 0;
+}
+
+// 'cr' must be initialized and empty. Return 0 if OK, -1 if error, -2 if not found.
+export fn unicode_script(cr: *CharRange, script_name: [*c]const u8, is_ext: c_int) callconv(.c) c_int {
+    const script_idx = unicode_find_name(zig_unicode_script_name_table, script_name);
+    if (script_idx < 0) return -2;
+
+    const is_common = (script_idx == zig_UNICODE_SCRIPT_Common or script_idx == zig_UNICODE_SCRIPT_Inherited);
+    var cr1_s: CharRange = undefined;
+    var cr2_s: CharRange = undefined;
+    const cr2 = &cr2_s;
+    var cr1: *CharRange = undefined;
+    if (is_ext != 0) {
+        cr1 = &cr1_s;
+        cr_init(cr1, cr.mem_opaque, cr.realloc_func);
+        cr_init(cr2, cr.mem_opaque, cr.realloc_func);
+    } else {
+        cr1 = cr;
+    }
+
+    var ok = false;
+    blk: {
+        var p = zig_unicode_script_table;
+        var p_end: usize = @intCast(zig_unicode_script_table_len);
+        var pi: usize = 0;
+        var c: u32 = 0;
+        while (pi < p_end) {
+            const b: u32 = p[pi];
+            pi += 1;
+            const typ = b >> 7;
+            var n = b & 0x7f;
+            if (n < 96) {
+                // n unchanged
+            } else if (n < 112) {
+                n = (n - 96) << 8;
+                n |= p[pi];
+                pi += 1;
+                n += 96;
+            } else {
+                n = (n - 112) << 16;
+                n |= @as(u32, p[pi]) << 8;
+                pi += 1;
+                n |= p[pi];
+                pi += 1;
+                n += 96 + (1 << 12);
+            }
+            const c1 = c + n + 1;
+            if (typ != 0) {
+                const v: c_int = p[pi];
+                pi += 1;
+                if (v == script_idx or script_idx == zig_UNICODE_SCRIPT_Unknown) {
+                    if (cr_add_interval(cr1, c, c1) != 0) break :blk;
+                }
+            }
+            c = c1;
+        }
+        if (script_idx == zig_UNICODE_SCRIPT_Unknown) {
+            // Unknown is all the characters outside scripts
+            if (cr_invert(cr1) != 0) break :blk;
+        }
+
+        if (is_ext != 0) {
+            // add the script extensions
+            p = zig_unicode_script_ext_table;
+            p_end = @intCast(zig_unicode_script_ext_table_len);
+            pi = 0;
+            c = 0;
+            while (pi < p_end) {
+                const b: u32 = p[pi];
+                pi += 1;
+                var n: u32 = undefined;
+                if (b < 128) {
+                    n = b;
+                } else if (b < 128 + 64) {
+                    n = (b - 128) << 8;
+                    n |= p[pi];
+                    pi += 1;
+                    n += 128;
+                } else {
+                    n = (b - 128 - 64) << 16;
+                    n |= @as(u32, p[pi]) << 8;
+                    pi += 1;
+                    n |= p[pi];
+                    pi += 1;
+                    n += 128 + (1 << 14);
+                }
+                const c1 = c + n + 1;
+                const v_len: u32 = p[pi];
+                pi += 1;
+                if (is_common) {
+                    if (v_len != 0) {
+                        if (cr_add_interval(cr2, c, c1) != 0) break :blk;
+                    }
+                } else {
+                    var i: u32 = 0;
+                    while (i < v_len) : (i += 1) {
+                        if (p[pi + i] == script_idx) {
+                            if (cr_add_interval(cr2, c, c1) != 0) break :blk;
+                            break;
+                        }
+                    }
+                }
+                pi += v_len;
+                c = c1;
+            }
+            if (is_common) {
+                // remove all the characters with script extensions
+                if (cr_invert(cr2) != 0) break :blk;
+                if (cr_op(cr, cr1.points, cr1.len, cr2.points, cr2.len, CR_OP_INTER) != 0) break :blk;
+            } else {
+                if (cr_op(cr, cr1.points, cr1.len, cr2.points, cr2.len, CR_OP_UNION) != 0) break :blk;
+            }
+        }
+        ok = true;
+    }
+    if (is_ext != 0) {
+        cr_free(cr1);
+        cr_free(cr2);
+    }
+    // NOTE: the C original had a `goto fail;` infinite loop here; the clear
+    // intent (matching every other fail path) is to return -1.
+    return if (ok) 0 else -1;
+}

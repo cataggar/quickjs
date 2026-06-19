@@ -134,264 +134,14 @@ typedef enum {
 
 /* char ranges for various unicode properties */
 
-static int unicode_find_name(const char *name_table, const char *name)
-{
-    const char *p, *r;
-    int pos;
-    size_t name_len, len;
-
-    p = name_table;
-    pos = 0;
-    name_len = strlen(name);
-    while (*p) {
-        for(;;) {
-            r = strchr(p, ',');
-            if (!r)
-                len = strlen(p);
-            else
-                len = r - p;
-            if (len == name_len && !memcmp(p, name, name_len))
-                return pos;
-            p += len + 1;
-            if (!r)
-                break;
-        }
-        pos++;
-    }
-    return -1;
-}
-
-/* 'cr' must be initialized and empty. Return 0 if OK, -1 if error, -2
-   if not found */
-int unicode_script(CharRange *cr,
-                   const char *script_name, BOOL is_ext)
-{
-    int script_idx;
-    const uint8_t *p, *p_end;
-    uint32_t c, c1, b, n, v, v_len, i, type;
-    CharRange cr1_s, *cr1;
-    CharRange cr2_s, *cr2 = &cr2_s;
-    BOOL is_common;
-
-    script_idx = unicode_find_name(unicode_script_name_table, script_name);
-    if (script_idx < 0)
-        return -2;
-
-    is_common = (script_idx == UNICODE_SCRIPT_Common ||
-                 script_idx == UNICODE_SCRIPT_Inherited);
-    if (is_ext) {
-        cr1 = &cr1_s;
-        cr_init(cr1, cr->mem_opaque, cr->realloc_func);
-        cr_init(cr2, cr->mem_opaque, cr->realloc_func);
-    } else {
-        cr1 = cr;
-    }
-
-    p = unicode_script_table;
-    p_end = unicode_script_table + countof(unicode_script_table);
-    c = 0;
-    while (p < p_end) {
-        b = *p++;
-        type = b >> 7;
-        n = b & 0x7f;
-        if (n < 96) {
-        } else if (n < 112) {
-            n = (n - 96) << 8;
-            n |= *p++;
-            n += 96;
-        } else {
-            n = (n - 112) << 16;
-            n |= *p++ << 8;
-            n |= *p++;
-            n += 96 + (1 << 12);
-        }
-        c1 = c + n + 1;
-        if (type != 0) {
-            v = *p++;
-            if (v == script_idx || script_idx == UNICODE_SCRIPT_Unknown) {
-                if (cr_add_interval(cr1, c, c1))
-                    goto fail;
-            }
-        }
-        c = c1;
-    }
-    if (script_idx == UNICODE_SCRIPT_Unknown) {
-        /* Unknown is all the characters outside scripts */
-        if (cr_invert(cr1))
-            goto fail;
-    }
-
-    if (is_ext) {
-        /* add the script extensions */
-        p = unicode_script_ext_table;
-        p_end = unicode_script_ext_table + countof(unicode_script_ext_table);
-        c = 0;
-        while (p < p_end) {
-            b = *p++;
-            if (b < 128) {
-                n = b;
-            } else if (b < 128 + 64) {
-                n = (b - 128) << 8;
-                n |= *p++;
-                n += 128;
-            } else {
-                n = (b - 128 - 64) << 16;
-                n |= *p++ << 8;
-                n |= *p++;
-                n += 128 + (1 << 14);
-            }
-            c1 = c + n + 1;
-            v_len = *p++;
-            if (is_common) {
-                if (v_len != 0) {
-                    if (cr_add_interval(cr2, c, c1))
-                        goto fail;
-                }
-            } else {
-                for(i = 0; i < v_len; i++) {
-                    if (p[i] == script_idx) {
-                        if (cr_add_interval(cr2, c, c1))
-                            goto fail;
-                        break;
-                    }
-                }
-            }
-            p += v_len;
-            c = c1;
-        }
-        if (is_common) {
-            /* remove all the characters with script extensions */
-            if (cr_invert(cr2))
-                goto fail;
-            if (cr_op(cr, cr1->points, cr1->len, cr2->points, cr2->len,
-                      CR_OP_INTER))
-                goto fail;
-        } else {
-            if (cr_op(cr, cr1->points, cr1->len, cr2->points, cr2->len,
-                      CR_OP_UNION))
-                goto fail;
-        }
-        cr_free(cr1);
-        cr_free(cr2);
-    }
-    return 0;
- fail:
-    if (is_ext) {
-        cr_free(cr1);
-        cr_free(cr2);
-    }
-    goto fail;
-}
+/* These table-walking workers are ported to Zig (libunicode.zig). */
+int unicode_find_name(const char *name_table, const char *name);
+int unicode_general_category1(CharRange *cr, uint32_t gc_mask);
+int unicode_prop1(CharRange *cr, int prop_idx);
 
 #define M(id) (1U << UNICODE_GC_ ## id)
 
-static int unicode_general_category1(CharRange *cr, uint32_t gc_mask)
-{
-    const uint8_t *p, *p_end;
-    uint32_t c, c0, b, n, v;
 
-    p = unicode_gc_table;
-    p_end = unicode_gc_table + countof(unicode_gc_table);
-    c = 0;
-    /* Compressed range encoding:
-       initial byte:
-       bits 0..4: category number (special case 31)
-       bits 5..7: range length (add 1)
-       special case bits 5..7 == 7: read an extra byte
-       - 00..7F: range length (add 7 + 1)
-       - 80..BF: 6-bits plus extra byte for range length (add 7 + 128)
-       - C0..FF: 6-bits plus 2 extra bytes for range length (add 7 + 128 + 16384)
-     */
-    while (p < p_end) {
-        b = *p++;
-        n = b >> 5;
-        v = b & 0x1f;
-        if (n == 7) {
-            n = *p++;
-            if (n < 128) {
-                n += 7;
-            } else if (n < 128 + 64) {
-                n = (n - 128) << 8;
-                n |= *p++;
-                n += 7 + 128;
-            } else {
-                n = (n - 128 - 64) << 16;
-                n |= *p++ << 8;
-                n |= *p++;
-                n += 7 + 128 + (1 << 14);
-            }
-        }
-        c0 = c;
-        c += n + 1;
-        if (v == 31) {
-            /* run of Lu / Ll */
-            b = gc_mask & (M(Lu) | M(Ll));
-            if (b != 0) {
-                if (b == (M(Lu) | M(Ll))) {
-                    goto add_range;
-                } else {
-                    c0 += ((gc_mask & M(Ll)) != 0);
-                    for(; c0 < c; c0 += 2) {
-                        if (cr_add_interval(cr, c0, c0 + 1))
-                            return -1;
-                    }
-                }
-            }
-        } else if ((gc_mask >> v) & 1) {
-        add_range:
-            if (cr_add_interval(cr, c0, c))
-                return -1;
-        }
-    }
-    return 0;
-}
-
-static int unicode_prop1(CharRange *cr, int prop_idx)
-{
-    const uint8_t *p, *p_end;
-    uint32_t c, c0, b, bit;
-
-    p = unicode_prop_table[prop_idx];
-    p_end = p + unicode_prop_len_table[prop_idx];
-    c = 0;
-    bit = 0;
-    /* Compressed range encoding:
-       00..3F: 2 packed lengths: 3-bit + 3-bit
-       40..5F: 5-bits plus extra byte for length
-       60..7F: 5-bits plus 2 extra bytes for length
-       80..FF: 7-bit length
-       lengths must be incremented to get character count
-       Ranges alternate between false and true return value.
-     */
-    while (p < p_end) {
-        c0 = c;
-        b = *p++;
-        if (b < 64) {
-            c += (b >> 3) + 1;
-            if (bit)  {
-                if (cr_add_interval(cr, c0, c))
-                    return -1;
-            }
-            bit ^= 1;
-            c0 = c;
-            c += (b & 7) + 1;
-        } else if (b >= 0x80) {
-            c += b - 0x80 + 1;
-        } else if (b < 0x60) {
-            c += (((b - 0x40) << 8) | p[0]) + 1;
-            p++;
-        } else {
-            c += (((b - 0x60) << 16) | (p[0] << 8) | p[1]) + 1;
-            p += 2;
-        }
-        if (bit)  {
-            if (cr_add_interval(cr, c0, c))
-                return -1;
-        }
-        bit ^= 1;
-    }
-    return 0;
-}
 
 typedef enum {
     POP_GC,
@@ -1017,3 +767,25 @@ const int             zig_prop_ID_Start_index_len    = (int)sizeof(unicode_prop_
 const uint8_t  *const zig_prop_ID_Continue1_table    = unicode_prop_ID_Continue1_table;
 const uint8_t  *const zig_prop_ID_Continue1_index    = unicode_prop_ID_Continue1_index;
 const int             zig_prop_ID_Continue1_index_len = (int)sizeof(unicode_prop_ID_Continue1_index);
+
+/* Table/constant exports + worker prototypes for the Zig port. The
+   table-walking workers (unicode_find_name, unicode_general_category1,
+   unicode_prop1, unicode_script) are ported to libunicode.zig; the C
+   dispatchers (unicode_general_category, unicode_prop) and the variadic
+   unicode_prop_ops still call them. */
+const uint8_t  *const zig_unicode_gc_table          = unicode_gc_table;
+const int             zig_unicode_gc_table_len      = (int)countof(unicode_gc_table);
+const uint8_t  *const *const zig_unicode_prop_table = unicode_prop_table;
+const int             zig_unicode_prop_table_len    = (int)countof(unicode_prop_table);
+const uint16_t *const zig_unicode_prop_len_table    = unicode_prop_len_table;
+const uint8_t  *const zig_unicode_script_table      = unicode_script_table;
+const int             zig_unicode_script_table_len  = (int)countof(unicode_script_table);
+const uint8_t  *const zig_unicode_script_ext_table     = unicode_script_ext_table;
+const int             zig_unicode_script_ext_table_len = (int)countof(unicode_script_ext_table);
+
+const int zig_UNICODE_GC_Lu          = UNICODE_GC_Lu;
+const int zig_UNICODE_GC_Ll          = UNICODE_GC_Ll;
+const int zig_UNICODE_SCRIPT_Common   = UNICODE_SCRIPT_Common;
+const int zig_UNICODE_SCRIPT_Inherited = UNICODE_SCRIPT_Inherited;
+const int zig_UNICODE_SCRIPT_Unknown  = UNICODE_SCRIPT_Unknown;
+const char  *const zig_unicode_script_name_table = unicode_script_name_table;
