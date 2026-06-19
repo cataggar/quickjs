@@ -525,212 +525,8 @@ uint8_t const lre_ctype_bits[256] = {
 /* lre_is_space_non_ascii (and its char_range_s table) are ported to Zig
    (libunicode.zig). */
 
-#define SEQ_MAX_LEN 16
-
-static int unicode_sequence_prop1(int seq_prop_idx, UnicodeSequencePropCB *cb, void *opaque,
-                                  CharRange *cr)
-{
-    int i, c, j;
-    uint32_t seq[SEQ_MAX_LEN];
-    
-    switch(seq_prop_idx) {
-    case UNICODE_SEQUENCE_PROP_Basic_Emoji:
-        if (unicode_prop1(cr, UNICODE_PROP_Basic_Emoji1) < 0)
-            return -1;
-        for(i = 0; i < cr->len; i += 2) {
-            for(c = cr->points[i]; c < cr->points[i + 1]; c++) {
-                seq[0] = c;
-                cb(opaque, seq, 1);
-            }
-        }
-
-        cr->len = 0;
-
-        if (unicode_prop1(cr, UNICODE_PROP_Basic_Emoji2) < 0)
-            return -1;
-        for(i = 0; i < cr->len; i += 2) {
-            for(c = cr->points[i]; c < cr->points[i + 1]; c++) {
-                seq[0] = c;
-                seq[1] = 0xfe0f;
-                cb(opaque, seq, 2);
-            }
-        }
-
-        break;
-    case UNICODE_SEQUENCE_PROP_RGI_Emoji_Modifier_Sequence:
-        if (unicode_prop1(cr, UNICODE_PROP_Emoji_Modifier_Base) < 0)
-            return -1;
-        for(i = 0; i < cr->len; i += 2) {
-            for(c = cr->points[i]; c < cr->points[i + 1]; c++) {
-                for(j = 0; j < 5; j++) {
-                    seq[0] = c;
-                    seq[1] = 0x1f3fb + j;
-                    cb(opaque, seq, 2);
-                }
-            }
-        }
-        break;
-    case UNICODE_SEQUENCE_PROP_RGI_Emoji_Flag_Sequence:
-        if (unicode_prop1(cr, UNICODE_PROP_RGI_Emoji_Flag_Sequence) < 0)
-            return -1;
-        for(i = 0; i < cr->len; i += 2) {
-            for(c = cr->points[i]; c < cr->points[i + 1]; c++) {
-                int c0, c1;
-                c0 = c / 26;
-                c1 = c % 26;
-                seq[0] = 0x1F1E6 + c0;
-                seq[1] = 0x1F1E6 + c1;
-                cb(opaque, seq, 2);
-            }
-        }
-        break;
-    case UNICODE_SEQUENCE_PROP_RGI_Emoji_ZWJ_Sequence:
-        {
-            int len, code, pres, k, mod, mod_count, mod_pos[2], hc_pos, n_mod, n_hc, mod1;
-            int mod_idx, hc_idx, i0, i1;
-            const uint8_t *tab = unicode_rgi_emoji_zwj_sequence;
-            
-            for(i = 0; i < countof(unicode_rgi_emoji_zwj_sequence);) {
-                len = tab[i++];
-                k = 0;
-                mod = 0;
-                mod_count = 0;
-                hc_pos = -1;
-                for(j = 0; j < len; j++) {
-                    code = tab[i++];
-                    code |= tab[i++] << 8;
-                    pres = code >> 15;
-                    mod1 = (code >> 13) & 3;
-                    code &= 0x1fff;
-                    if (code < 0x1000) {
-                        c = code + 0x2000;
-                    } else {
-                        c = 0x1f000 + (code - 0x1000);
-                    }
-                    if (c == 0x1f9b0)
-                        hc_pos = k;
-                    seq[k++] = c;
-                    if (mod1 != 0) {
-                        assert(mod_count < 2);
-                        mod = mod1;
-                        mod_pos[mod_count++] = k;
-                        seq[k++] = 0; /* will be filled later */
-                    }
-                    if (pres) {
-                        seq[k++] = 0xfe0f;
-                    }
-                    if (j < len - 1) {
-                        seq[k++] = 0x200d;
-                    }
-                }
-
-                /* genrate all the variants */
-                switch(mod) {
-                case 1:
-                    n_mod = 5;
-                    break;
-                case 2:
-                    n_mod = 25;
-                    break;
-                case 3:
-                    n_mod = 20;
-                    break;
-                default:
-                    n_mod = 1;
-                    break;
-                }
-                if (hc_pos >= 0)
-                    n_hc = 4;
-                else
-                    n_hc = 1;
-                for(hc_idx = 0; hc_idx < n_hc; hc_idx++) {
-                    for(mod_idx = 0; mod_idx < n_mod; mod_idx++) {
-                        if (hc_pos >= 0)
-                            seq[hc_pos] = 0x1f9b0 + hc_idx;
-                        
-                        switch(mod) {
-                        case 1:
-                            seq[mod_pos[0]] = 0x1f3fb + mod_idx;
-                            break;
-                        case 2:
-                        case 3:
-                            i0 = mod_idx / 5;
-                            i1 = mod_idx % 5;
-                            /* avoid identical values */
-                            if (mod == 3 && i0 >= i1)
-                                i0++;
-                            seq[mod_pos[0]] = 0x1f3fb + i0;
-                            seq[mod_pos[1]] = 0x1f3fb + i1;
-                            break;
-                        default:
-                            break;
-                        }
-#if 0
-                        for(j = 0; j < k; j++)
-                            printf(" %04x", seq[j]);
-                        printf("\n");
-#endif                
-                        cb(opaque, seq, k);
-                    }
-                }
-            }
-        }
-        break;
-    case UNICODE_SEQUENCE_PROP_RGI_Emoji_Tag_Sequence:
-        {
-            for(i = 0; i < countof(unicode_rgi_emoji_tag_sequence);) {
-                j = 0;
-                seq[j++] = 0x1F3F4;
-                for(;;) {
-                    c = unicode_rgi_emoji_tag_sequence[i++];
-                    if (c == 0x00)
-                        break;
-                    seq[j++] = 0xe0000 + c;
-                }
-                seq[j++] = 0xe007f;
-                cb(opaque, seq, j);
-            }
-        }
-        break;
-    case UNICODE_SEQUENCE_PROP_Emoji_Keycap_Sequence:
-        if (unicode_prop1(cr, UNICODE_PROP_Emoji_Keycap_Sequence) < 0)
-            return -1;
-        for(i = 0; i < cr->len; i += 2) {
-            for(c = cr->points[i]; c < cr->points[i + 1]; c++) {
-                seq[0] = c;
-                seq[1] = 0xfe0f;
-                seq[2] = 0x20e3;
-                cb(opaque, seq, 3);
-            }
-        }
-        break;
-    case UNICODE_SEQUENCE_PROP_RGI_Emoji:
-        /* all prevous sequences */
-        for(i = UNICODE_SEQUENCE_PROP_Basic_Emoji; i <= UNICODE_SEQUENCE_PROP_RGI_Emoji_ZWJ_Sequence; i++) {
-            int ret;
-            ret = unicode_sequence_prop1(i, cb, opaque, cr);
-            if (ret < 0)
-                return ret;
-            cr->len = 0;
-        }
-        break;
-    default:
-        return -2;
-    }
-    return 0;
-}
-
-/* build a unicode sequence property */
-/* return -2 if not found, -1 if other error. 'cr' is used as temporary memory. */
-int unicode_sequence_prop(const char *prop_name, UnicodeSequencePropCB *cb, void *opaque,
-                          CharRange *cr)
-{
-    int seq_prop_idx;
-    seq_prop_idx = unicode_find_name(unicode_sequence_prop_name_table, prop_name);
-    if (seq_prop_idx < 0)
-        return -2;
-    return unicode_sequence_prop1(seq_prop_idx, cb, opaque, cr);
-}
+/* unicode_sequence_prop and unicode_sequence_prop1 are ported to Zig
+   (libunicode.zig). */
 
 /*
  * Table pointers exported for the Zig port (libunicode.zig). Zig 0.16's
@@ -789,3 +585,24 @@ const int zig_UNICODE_SCRIPT_Common   = UNICODE_SCRIPT_Common;
 const int zig_UNICODE_SCRIPT_Inherited = UNICODE_SCRIPT_Inherited;
 const int zig_UNICODE_SCRIPT_Unknown  = UNICODE_SCRIPT_Unknown;
 const char  *const zig_unicode_script_name_table = unicode_script_name_table;
+
+/* Exports for the ported unicode_sequence_prop (libunicode.zig). */
+const uint8_t *const zig_unicode_rgi_emoji_zwj_sequence     = unicode_rgi_emoji_zwj_sequence;
+const int            zig_unicode_rgi_emoji_zwj_sequence_len = (int)countof(unicode_rgi_emoji_zwj_sequence);
+const uint8_t *const zig_unicode_rgi_emoji_tag_sequence     = unicode_rgi_emoji_tag_sequence;
+const int            zig_unicode_rgi_emoji_tag_sequence_len = (int)countof(unicode_rgi_emoji_tag_sequence);
+const char    *const zig_unicode_sequence_prop_name_table   = unicode_sequence_prop_name_table;
+
+const int zig_SEQ_PROP_Basic_Emoji                 = UNICODE_SEQUENCE_PROP_Basic_Emoji;
+const int zig_SEQ_PROP_RGI_Emoji_Modifier_Sequence = UNICODE_SEQUENCE_PROP_RGI_Emoji_Modifier_Sequence;
+const int zig_SEQ_PROP_RGI_Emoji_Flag_Sequence     = UNICODE_SEQUENCE_PROP_RGI_Emoji_Flag_Sequence;
+const int zig_SEQ_PROP_RGI_Emoji_ZWJ_Sequence      = UNICODE_SEQUENCE_PROP_RGI_Emoji_ZWJ_Sequence;
+const int zig_SEQ_PROP_RGI_Emoji_Tag_Sequence      = UNICODE_SEQUENCE_PROP_RGI_Emoji_Tag_Sequence;
+const int zig_SEQ_PROP_Emoji_Keycap_Sequence       = UNICODE_SEQUENCE_PROP_Emoji_Keycap_Sequence;
+const int zig_SEQ_PROP_RGI_Emoji                    = UNICODE_SEQUENCE_PROP_RGI_Emoji;
+
+const int zig_PROP_Basic_Emoji1        = UNICODE_PROP_Basic_Emoji1;
+const int zig_PROP_Basic_Emoji2        = UNICODE_PROP_Basic_Emoji2;
+const int zig_PROP_Emoji_Modifier_Base = UNICODE_PROP_Emoji_Modifier_Base;
+const int zig_PROP_RGI_Emoji_Flag_Sequence = UNICODE_PROP_RGI_Emoji_Flag_Sequence;
+const int zig_PROP_Emoji_Keycap_Sequence   = UNICODE_PROP_Emoji_Keycap_Sequence;

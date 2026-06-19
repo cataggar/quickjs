@@ -1455,3 +1455,211 @@ export fn unicode_script(cr: *CharRange, script_name: [*c]const u8, is_ext: c_in
     // intent (matching every other fail path) is to return -1.
     return if (ok) 0 else -1;
 }
+
+// ---------------------------------------------------------------------------
+// Unicode sequence properties (emoji sequences): unicode_sequence_prop(1).
+// ---------------------------------------------------------------------------
+
+const SEQ_MAX_LEN = 16;
+
+const UnicodeSequencePropCB = fn (opaque_ptr: ?*anyopaque, buf: [*c]const u32, len: c_int) callconv(.c) void;
+
+extern const zig_unicode_rgi_emoji_zwj_sequence: [*]const u8;
+extern const zig_unicode_rgi_emoji_zwj_sequence_len: c_int;
+extern const zig_unicode_rgi_emoji_tag_sequence: [*]const u8;
+extern const zig_unicode_rgi_emoji_tag_sequence_len: c_int;
+extern const zig_unicode_sequence_prop_name_table: [*c]const u8;
+extern const zig_SEQ_PROP_Basic_Emoji: c_int;
+extern const zig_SEQ_PROP_RGI_Emoji_Modifier_Sequence: c_int;
+extern const zig_SEQ_PROP_RGI_Emoji_Flag_Sequence: c_int;
+extern const zig_SEQ_PROP_RGI_Emoji_ZWJ_Sequence: c_int;
+extern const zig_SEQ_PROP_RGI_Emoji_Tag_Sequence: c_int;
+extern const zig_SEQ_PROP_Emoji_Keycap_Sequence: c_int;
+extern const zig_SEQ_PROP_RGI_Emoji: c_int;
+extern const zig_PROP_Basic_Emoji1: c_int;
+extern const zig_PROP_Basic_Emoji2: c_int;
+extern const zig_PROP_Emoji_Modifier_Base: c_int;
+extern const zig_PROP_RGI_Emoji_Flag_Sequence: c_int;
+extern const zig_PROP_Emoji_Keycap_Sequence: c_int;
+
+fn unicode_sequence_prop1(seq_prop_idx: c_int, cb: ?*const UnicodeSequencePropCB, opaque_ptr: ?*anyopaque, cr: *CharRange) c_int {
+    var seq: [SEQ_MAX_LEN]u32 = undefined;
+    const callcb = cb.?;
+    if (seq_prop_idx == zig_SEQ_PROP_Basic_Emoji) {
+        if (unicode_prop1(cr, zig_PROP_Basic_Emoji1) < 0) return -1;
+        var i: c_int = 0;
+        while (i < cr.len) : (i += 2) {
+            var c = cr.points[@intCast(i)];
+            const e = cr.points[@intCast(i + 1)];
+            while (c < e) : (c += 1) {
+                seq[0] = c;
+                callcb(opaque_ptr, &seq, 1);
+            }
+        }
+        cr.len = 0;
+        if (unicode_prop1(cr, zig_PROP_Basic_Emoji2) < 0) return -1;
+        i = 0;
+        while (i < cr.len) : (i += 2) {
+            var c = cr.points[@intCast(i)];
+            const e = cr.points[@intCast(i + 1)];
+            while (c < e) : (c += 1) {
+                seq[0] = c;
+                seq[1] = 0xfe0f;
+                callcb(opaque_ptr, &seq, 2);
+            }
+        }
+    } else if (seq_prop_idx == zig_SEQ_PROP_RGI_Emoji_Modifier_Sequence) {
+        if (unicode_prop1(cr, zig_PROP_Emoji_Modifier_Base) < 0) return -1;
+        var i: c_int = 0;
+        while (i < cr.len) : (i += 2) {
+            var c = cr.points[@intCast(i)];
+            const e = cr.points[@intCast(i + 1)];
+            while (c < e) : (c += 1) {
+                var j: c_int = 0;
+                while (j < 5) : (j += 1) {
+                    seq[0] = c;
+                    seq[1] = 0x1f3fb + @as(u32, @intCast(j));
+                    callcb(opaque_ptr, &seq, 2);
+                }
+            }
+        }
+    } else if (seq_prop_idx == zig_SEQ_PROP_RGI_Emoji_Flag_Sequence) {
+        if (unicode_prop1(cr, zig_PROP_RGI_Emoji_Flag_Sequence) < 0) return -1;
+        var i: c_int = 0;
+        while (i < cr.len) : (i += 2) {
+            var c = cr.points[@intCast(i)];
+            const e = cr.points[@intCast(i + 1)];
+            while (c < e) : (c += 1) {
+                const c0 = c / 26;
+                const c1 = c % 26;
+                seq[0] = 0x1F1E6 + c0;
+                seq[1] = 0x1F1E6 + c1;
+                callcb(opaque_ptr, &seq, 2);
+            }
+        }
+    } else if (seq_prop_idx == zig_SEQ_PROP_RGI_Emoji_ZWJ_Sequence) {
+        const tab = zig_unicode_rgi_emoji_zwj_sequence;
+        const tablen: usize = @intCast(zig_unicode_rgi_emoji_zwj_sequence_len);
+        var i: usize = 0;
+        while (i < tablen) {
+            const len: c_int = @intCast(tab[i]);
+            i += 1;
+            var k: usize = 0;
+            var mod: c_int = 0;
+            var mod_count: usize = 0;
+            var hc_pos: c_int = -1;
+            var mod_pos: [2]usize = undefined;
+            var j: c_int = 0;
+            while (j < len) : (j += 1) {
+                var code: c_int = tab[i];
+                i += 1;
+                code |= @as(c_int, tab[i]) << 8;
+                i += 1;
+                const pres = code >> 15;
+                const mod1 = (code >> 13) & 3;
+                code &= 0x1fff;
+                var c: u32 = undefined;
+                if (code < 0x1000) {
+                    c = @as(u32, @intCast(code)) + 0x2000;
+                } else {
+                    c = 0x1f000 + @as(u32, @intCast(code - 0x1000));
+                }
+                if (c == 0x1f9b0) hc_pos = @intCast(k);
+                seq[k] = c;
+                k += 1;
+                if (mod1 != 0) {
+                    mod = mod1;
+                    mod_pos[mod_count] = k;
+                    mod_count += 1;
+                    seq[k] = 0; // will be filled later
+                    k += 1;
+                }
+                if (pres != 0) {
+                    seq[k] = 0xfe0f;
+                    k += 1;
+                }
+                if (j < len - 1) {
+                    seq[k] = 0x200d;
+                    k += 1;
+                }
+            }
+            // generate all the variants
+            const n_mod: c_int = switch (mod) {
+                1 => 5,
+                2 => 25,
+                3 => 20,
+                else => 1,
+            };
+            const n_hc: c_int = if (hc_pos >= 0) 4 else 1;
+            var hc_idx: c_int = 0;
+            while (hc_idx < n_hc) : (hc_idx += 1) {
+                var mod_idx: c_int = 0;
+                while (mod_idx < n_mod) : (mod_idx += 1) {
+                    if (hc_pos >= 0) seq[@intCast(hc_pos)] = 0x1f9b0 + @as(u32, @intCast(hc_idx));
+                    if (mod == 1) {
+                        seq[mod_pos[0]] = 0x1f3fb + @as(u32, @intCast(mod_idx));
+                    } else if (mod == 2 or mod == 3) {
+                        var idx0 = @divTrunc(mod_idx, 5);
+                        const idx1 = @rem(mod_idx, 5);
+                        // avoid identical values
+                        if (mod == 3 and idx0 >= idx1) idx0 += 1;
+                        seq[mod_pos[0]] = 0x1f3fb + @as(u32, @intCast(idx0));
+                        seq[mod_pos[1]] = 0x1f3fb + @as(u32, @intCast(idx1));
+                    }
+                    callcb(opaque_ptr, &seq, @intCast(k));
+                }
+            }
+        }
+    } else if (seq_prop_idx == zig_SEQ_PROP_RGI_Emoji_Tag_Sequence) {
+        const tab = zig_unicode_rgi_emoji_tag_sequence;
+        const tablen: usize = @intCast(zig_unicode_rgi_emoji_tag_sequence_len);
+        var i: usize = 0;
+        while (i < tablen) {
+            var j: usize = 0;
+            seq[j] = 0x1F3F4;
+            j += 1;
+            while (true) {
+                const cc: u32 = tab[i];
+                i += 1;
+                if (cc == 0x00) break;
+                seq[j] = 0xe0000 + cc;
+                j += 1;
+            }
+            seq[j] = 0xe007f;
+            j += 1;
+            callcb(opaque_ptr, &seq, @intCast(j));
+        }
+    } else if (seq_prop_idx == zig_SEQ_PROP_Emoji_Keycap_Sequence) {
+        if (unicode_prop1(cr, zig_PROP_Emoji_Keycap_Sequence) < 0) return -1;
+        var i: c_int = 0;
+        while (i < cr.len) : (i += 2) {
+            var c = cr.points[@intCast(i)];
+            const e = cr.points[@intCast(i + 1)];
+            while (c < e) : (c += 1) {
+                seq[0] = c;
+                seq[1] = 0xfe0f;
+                seq[2] = 0x20e3;
+                callcb(opaque_ptr, &seq, 3);
+            }
+        }
+    } else if (seq_prop_idx == zig_SEQ_PROP_RGI_Emoji) {
+        // all previous sequences
+        var i: c_int = zig_SEQ_PROP_Basic_Emoji;
+        while (i <= zig_SEQ_PROP_RGI_Emoji_ZWJ_Sequence) : (i += 1) {
+            const ret = unicode_sequence_prop1(i, cb, opaque_ptr, cr);
+            if (ret < 0) return ret;
+            cr.len = 0;
+        }
+    } else {
+        return -2;
+    }
+    return 0;
+}
+
+// build a unicode sequence property.
+// return -2 if not found, -1 if other error. 'cr' is used as temporary memory.
+export fn unicode_sequence_prop(prop_name: [*c]const u8, cb: ?*const UnicodeSequencePropCB, opaque_ptr: ?*anyopaque, cr: *CharRange) callconv(.c) c_int {
+    const seq_prop_idx = unicode_find_name(zig_unicode_sequence_prop_name_table, prop_name);
+    if (seq_prop_idx < 0) return -2;
+    return unicode_sequence_prop1(seq_prop_idx, cb, opaque_ptr, cr);
+}
