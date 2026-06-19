@@ -174,8 +174,24 @@ export fn cr_invert(cr: *CharRange) callconv(.c) c_int {
 // static helpers in libunicode.c (those stay in C because many not-yet-ported
 // C functions still use them).
 // ---------------------------------------------------------------------------
-
-const utab = @import("unicode_table.zig").c;
+// Generated Unicode tables (Unicode 17.0). Zig 0.17 removed @cImport, so they
+// are accessed through external pointer symbols defined in libunicode.c.
+extern const zig_case_conv_table1: [*]const u32;
+extern const zig_case_conv_table1_len: c_int;
+extern const zig_case_conv_table2: [*]const u8;
+extern const zig_case_conv_ext: [*]const u16;
+extern const zig_prop_Cased1_table: [*]const u8;
+extern const zig_prop_Cased1_index: [*]const u8;
+extern const zig_prop_Cased1_index_len: c_int;
+extern const zig_prop_Case_Ignorable_table: [*]const u8;
+extern const zig_prop_Case_Ignorable_index: [*]const u8;
+extern const zig_prop_Case_Ignorable_index_len: c_int;
+extern const zig_prop_ID_Start_table: [*]const u8;
+extern const zig_prop_ID_Start_index: [*]const u8;
+extern const zig_prop_ID_Start_index_len: c_int;
+extern const zig_prop_ID_Continue1_table: [*]const u8;
+extern const zig_prop_ID_Continue1_index: [*]const u8;
+extern const zig_prop_ID_Continue1_index_len: c_int;
 
 const UNICODE_INDEX_BLOCK_LEN: c_int = 32;
 
@@ -242,10 +258,10 @@ fn lre_is_in_table(c: u32, table: [*]const u8, index_table: [*]const u8, index_t
 
 export fn lre_is_cased(c: u32) callconv(.c) c_int {
     var idx_min: c_int = 0;
-    var idx_max: c_int = @as(c_int, @intCast(utab.case_conv_table1.len)) - 1;
+    var idx_max: c_int = zig_case_conv_table1_len - 1;
     while (idx_min <= idx_max) {
         const idx: c_int = @intCast(@as(c_uint, @intCast(idx_max + idx_min)) / 2);
-        const v = utab.case_conv_table1[@intCast(idx)];
+        const v = zig_case_conv_table1[@intCast(idx)];
         const code = v >> (32 - 17);
         const len = (v >> (32 - 17 - 7)) & 0x7f;
         if (c < code) {
@@ -258,27 +274,27 @@ export fn lre_is_cased(c: u32) callconv(.c) c_int {
     }
     return @intFromBool(lre_is_in_table(
         c,
-        &utab.unicode_prop_Cased1_table,
-        &utab.unicode_prop_Cased1_index,
-        @intCast(utab.unicode_prop_Cased1_index.len / 3),
+        zig_prop_Cased1_table,
+        zig_prop_Cased1_index,
+        @divTrunc(zig_prop_Cased1_index_len, 3),
     ));
 }
 
 export fn lre_is_case_ignorable(c: u32) callconv(.c) c_int {
     return @intFromBool(lre_is_in_table(
         c,
-        &utab.unicode_prop_Case_Ignorable_table,
-        &utab.unicode_prop_Case_Ignorable_index,
-        @intCast(utab.unicode_prop_Case_Ignorable_index.len / 3),
+        zig_prop_Case_Ignorable_table,
+        zig_prop_Case_Ignorable_index,
+        @divTrunc(zig_prop_Case_Ignorable_index_len, 3),
     ));
 }
 
 export fn lre_is_id_start(c: u32) callconv(.c) c_int {
     return @intFromBool(lre_is_in_table(
         c,
-        &utab.unicode_prop_ID_Start_table,
-        &utab.unicode_prop_ID_Start_index,
-        @intCast(utab.unicode_prop_ID_Start_index.len / 3),
+        zig_prop_ID_Start_table,
+        zig_prop_ID_Start_index,
+        @divTrunc(zig_prop_ID_Start_index_len, 3),
     ));
 }
 
@@ -286,9 +302,9 @@ export fn lre_is_id_continue(c: u32) callconv(.c) c_int {
     if (lre_is_id_start(c) != 0) return 1;
     return @intFromBool(lre_is_in_table(
         c,
-        &utab.unicode_prop_ID_Continue1_table,
-        &utab.unicode_prop_ID_Continue1_index,
-        @intCast(utab.unicode_prop_ID_Continue1_index.len / 3),
+        zig_prop_ID_Continue1_table,
+        zig_prop_ID_Continue1_index,
+        @divTrunc(zig_prop_ID_Continue1_index_len, 3),
     ));
 }
 
@@ -320,13 +336,13 @@ const RUN_TYPE_LF_EXT2: u32 = 12;
 const RUN_TYPE_UF_EXT3: u32 = 13;
 
 inline fn t1(i: u32) u32 {
-    return utab.case_conv_table1[i];
+    return zig_case_conv_table1[i];
 }
 inline fn t2(i: u32) u32 {
-    return @as(u32, utab.case_conv_table2[i]);
+    return @as(u32, zig_case_conv_table2[i]);
 }
 inline fn ext(i: u32) u32 {
-    return @as(u32, utab.case_conv_ext[i]);
+    return @as(u32, zig_case_conv_ext[i]);
 }
 
 fn lre_case_conv1(c: u32, conv_type: c_int) u32 {
@@ -438,7 +454,7 @@ export fn lre_case_conv(res: [*c]u32, c_in: u32, conv_type: c_int) callconv(.c) 
         }
     } else {
         var idx_min: c_int = 0;
-        var idx_max: c_int = @as(c_int, @intCast(utab.case_conv_table1.len)) - 1;
+        var idx_max: c_int = zig_case_conv_table1_len - 1;
         while (idx_min <= idx_max) {
             const idx: c_int = @intCast(@as(c_uint, @intCast(idx_max + idx_min)) / 2);
             const v = t1(@intCast(idx));
@@ -498,7 +514,7 @@ export fn lre_canonicalize(c_in: u32, is_unicode: c_int) callconv(.c) c_int {
         }
     } else {
         var idx_min: c_int = 0;
-        var idx_max: c_int = @as(c_int, @intCast(utab.case_conv_table1.len)) - 1;
+        var idx_max: c_int = zig_case_conv_table1_len - 1;
         while (idx_min <= idx_max) {
             const idx: c_int = @intCast(@as(c_uint, @intCast(idx_max + idx_min)) / 2);
             const v = t1(@intCast(idx));
@@ -995,4 +1011,192 @@ export fn unicode_normalize(pdst: [*c][*c]u32, src: [*c]const u32, src_len: c_in
     }
     pdst.* = @ptrCast(buf);
     return out_len;
+}
+
+// ---------------------------------------------------------------------------
+// Regexp case-folding CharRange construction: unicode_case1, point_cmp,
+// cr_sort_and_remove_overlap, cr_regexp_canonicalize.
+// ---------------------------------------------------------------------------
+
+const CASE_U: c_int = 1;
+const CASE_L: c_int = 2;
+const CASE_F: c_int = 4;
+
+const RqsortCmp = *const fn (a: ?*const anyopaque, b: ?*const anyopaque, arg: ?*anyopaque) callconv(.c) c_int;
+extern fn rqsort(base: ?*anyopaque, nmemb: usize, size: usize, cmp: RqsortCmp, arg: ?*anyopaque) callconv(.c) void;
+
+// static inline cr_add_interval from libunicode.h
+fn cr_add_interval(cr: *CharRange, c1: u32, c2: u32) c_int {
+    if ((cr.len + 2) > cr.size) {
+        if (cr_realloc(cr, cr.len + 2) != 0) return -1;
+    }
+    cr.points[@intCast(cr.len)] = c1;
+    cr.len += 1;
+    cr.points[@intCast(cr.len)] = c2;
+    cr.len += 1;
+    return 0;
+}
+
+inline fn MR(rt: u32) u32 {
+    return @as(u32, 1) << @as(u5, @intCast(rt));
+}
+
+export fn unicode_case1(cr: *CharRange, case_mask: c_int) callconv(.c) c_int {
+    const tab_run_mask = [3]u32{
+        MR(RUN_TYPE_U) | MR(RUN_TYPE_UF) | MR(RUN_TYPE_UL) | MR(RUN_TYPE_LSU) | MR(RUN_TYPE_U2L_399_EXT2) | MR(RUN_TYPE_UF_D20) | MR(RUN_TYPE_UF_D1_EXT) | MR(RUN_TYPE_U_EXT) | MR(RUN_TYPE_UF_EXT2) | MR(RUN_TYPE_UF_EXT3),
+        MR(RUN_TYPE_L) | MR(RUN_TYPE_LF) | MR(RUN_TYPE_UL) | MR(RUN_TYPE_LSU) | MR(RUN_TYPE_U2L_399_EXT2) | MR(RUN_TYPE_LF_EXT) | MR(RUN_TYPE_LF_EXT2),
+        MR(RUN_TYPE_UF) | MR(RUN_TYPE_LF) | MR(RUN_TYPE_UL) | MR(RUN_TYPE_LSU) | MR(RUN_TYPE_U2L_399_EXT2) | MR(RUN_TYPE_LF_EXT) | MR(RUN_TYPE_LF_EXT2) | MR(RUN_TYPE_UF_D20) | MR(RUN_TYPE_UF_D1_EXT) | MR(RUN_TYPE_LF_EXT) | MR(RUN_TYPE_UF_EXT2) | MR(RUN_TYPE_UF_EXT3),
+    };
+    if (case_mask == 0) return 0;
+    var mask: u32 = 0;
+    var i: u32 = 0;
+    while (i < 3) : (i += 1) {
+        if (((case_mask >> @as(u5, @intCast(i))) & 1) != 0) mask |= tab_run_mask[i];
+    }
+    var idx: u32 = 0;
+    while (idx < @as(u32, @intCast(zig_case_conv_table1_len))) : (idx += 1) {
+        const v = zig_case_conv_table1[idx];
+        const typ = (v >> (32 - 17 - 7 - 4)) & 0xf;
+        var code = v >> (32 - 17);
+        const len = (v >> (32 - 17 - 7)) & 0x7f;
+        if (((mask >> @as(u5, @intCast(typ))) & 1) != 0) {
+            if (typ == RUN_TYPE_UL) {
+                if ((case_mask & CASE_U) != 0 and (case_mask & (CASE_L | CASE_F)) != 0) {
+                    if (cr_add_interval(cr, code, code + len) != 0) return -1; // def_case
+                } else {
+                    code += @as(u32, @intFromBool((case_mask & CASE_U) != 0));
+                    var j: u32 = 0;
+                    while (j < len) : (j += 2) {
+                        if (cr_add_interval(cr, code + j, code + j + 1) != 0) return -1;
+                    }
+                }
+            } else if (typ == RUN_TYPE_LSU) {
+                if ((case_mask & CASE_U) != 0 and (case_mask & (CASE_L | CASE_F)) != 0) {
+                    if (cr_add_interval(cr, code, code + len) != 0) return -1; // def_case
+                } else {
+                    if ((case_mask & CASE_U) == 0) {
+                        if (cr_add_interval(cr, code, code + 1) != 0) return -1;
+                    }
+                    if (cr_add_interval(cr, code + 1, code + 2) != 0) return -1;
+                    if ((case_mask & CASE_U) != 0) {
+                        if (cr_add_interval(cr, code + 2, code + 3) != 0) return -1;
+                    }
+                }
+            } else {
+                if (cr_add_interval(cr, code, code + len) != 0) return -1;
+            }
+        }
+    }
+    return 0;
+}
+
+fn point_cmp(p1: ?*const anyopaque, p2: ?*const anyopaque, arg: ?*anyopaque) callconv(.c) c_int {
+    _ = arg;
+    const v1 = @as(*const u32, @ptrCast(@alignCast(p1))).*;
+    const v2 = @as(*const u32, @ptrCast(@alignCast(p2))).*;
+    return @as(c_int, @intFromBool(v1 > v2)) - @as(c_int, @intFromBool(v1 < v2));
+}
+
+fn cr_sort_and_remove_overlap(cr: *CharRange) void {
+    // the resulting ranges are not necessarily sorted and may overlap
+    rqsort(@ptrCast(cr.points), @intCast(@divTrunc(cr.len, 2)), @sizeOf(u32) * 2, &point_cmp, null);
+    const len: u32 = @intCast(cr.len);
+    var j: u32 = 0;
+    var i: u32 = 0;
+    while (i < len) {
+        const start = cr.points[i];
+        var end = cr.points[i + 1];
+        i += 2;
+        while (i < len) {
+            const start1 = cr.points[i];
+            const end1 = cr.points[i + 1];
+            if (start1 > end) {
+                break;
+            } else if (end1 <= end) {
+                i += 2;
+            } else {
+                end = end1;
+                i += 2;
+            }
+        }
+        cr.points[j] = start;
+        cr.points[j + 1] = end;
+        j += 2;
+    }
+    cr.len = @intCast(j);
+}
+
+// canonicalize a character set using the JS regex case folding rules
+export fn cr_regexp_canonicalize(cr: *CharRange, is_unicode: c_int) callconv(.c) c_int {
+    var cr_inter: CharRange = undefined;
+    var cr_mask: CharRange = undefined;
+    var cr_result: CharRange = undefined;
+    var cr_sub: CharRange = undefined;
+
+    cr_init(&cr_mask, cr.mem_opaque, cr.realloc_func);
+    cr_init(&cr_inter, cr.mem_opaque, cr.realloc_func);
+    cr_init(&cr_result, cr.mem_opaque, cr.realloc_func);
+    cr_init(&cr_sub, cr.mem_opaque, cr.realloc_func);
+
+    var ok = false;
+    blk: {
+        if (unicode_case1(&cr_mask, if (is_unicode != 0) CASE_F else CASE_U) != 0) break :blk;
+        if (cr_op(&cr_inter, cr_mask.points, cr_mask.len, cr.points, cr.len, CR_OP_INTER) != 0) break :blk;
+
+        if (cr_invert(&cr_mask) != 0) break :blk;
+        if (cr_op(&cr_sub, cr_mask.points, cr_mask.len, cr.points, cr.len, CR_OP_INTER) != 0) break :blk;
+
+        // cr_inter = cr & cr_mask ; cr_sub = cr & ~cr_mask
+        // use the case conversion table to compute the result
+        var d_start: u32 = 0xFFFFFFFF; // -1
+        var d_end: u32 = 0xFFFFFFFF;
+        var idx: u32 = 0;
+        var v = zig_case_conv_table1[idx];
+        var code = v >> (32 - 17);
+        var len = (v >> (32 - 17 - 7)) & 0x7f;
+        var i: u32 = 0;
+        const inter_len: u32 = @intCast(cr_inter.len);
+        while (i < inter_len) : (i += 2) {
+            const start = cr_inter.points[i];
+            const end = cr_inter.points[i + 1];
+            var c = start;
+            while (c < end) : (c += 1) {
+                while (true) {
+                    if (c >= code and c < code + len) break;
+                    idx += 1;
+                    v = zig_case_conv_table1[idx];
+                    code = v >> (32 - 17);
+                    len = (v >> (32 - 17 - 7)) & 0x7f;
+                }
+                const d: u32 = @intCast(lre_case_folding_entry(c, idx, v, is_unicode));
+                // try to merge with the current interval
+                if (d_start == 0xFFFFFFFF) {
+                    d_start = d;
+                    d_end = d + 1;
+                } else if (d_end == d) {
+                    d_end += 1;
+                } else {
+                    _ = cr_add_interval(&cr_result, d_start, d_end);
+                    d_start = d;
+                    d_end = d + 1;
+                }
+            }
+        }
+        if (d_start != 0xFFFFFFFF) {
+            if (cr_add_interval(&cr_result, d_start, d_end) != 0) break :blk;
+        }
+
+        // the resulting ranges are not necessarily sorted and may overlap
+        cr_sort_and_remove_overlap(&cr_result);
+
+        // or with the characters not affected by the case folding
+        cr.len = 0;
+        if (cr_op(cr, cr_result.points, cr_result.len, cr_sub.points, cr_sub.len, CR_OP_UNION) != 0) break :blk;
+        ok = true;
+    }
+    cr_free(&cr_inter);
+    cr_free(&cr_mask);
+    cr_free(&cr_result);
+    cr_free(&cr_sub);
+    return if (ok) 0 else -1;
 }
