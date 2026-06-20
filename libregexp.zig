@@ -1043,3 +1043,118 @@ export fn re_emit_op_u16(s: *REParseState, op: c_int, val: u32) callconv(.c) voi
     _ = __dbuf_putc(&s.byte_code, @intCast(op));
     _ = __dbuf_put_u16(&s.byte_code, @truncate(val));
 }
+
+// ===========================================================================
+// Parser: small helpers (digits, expect, group-name lookups, modifiers).
+// ===========================================================================
+
+extern fn strlen(s: [*c]const u8) usize;
+extern fn memcmp(a: ?*const anyopaque, b: ?*const anyopaque, n: usize) c_int;
+// C-variadic; Zig can call (but not define) it.
+extern fn re_parse_error(s: *REParseState, fmt: [*c]const u8, ...) callconv(.c) c_int;
+
+const LRE_FLAG_IGNORECASE: c_int = 1 << 1;
+const LRE_FLAG_MULTILINE: c_int = 1 << 2;
+const LRE_FLAG_DOTALL: c_int = 1 << 3;
+const LRE_GROUP_NAME_TRAILER_LEN: usize = 2;
+const INT32_MAX_U: u64 = 0x7fffffff;
+
+// If allow_overflow is false, return -1 on overflow; otherwise INT32_MAX.
+export fn parse_digits(pp: [*c][*c]const u8, allow_overflow: c_int) callconv(.c) c_int {
+    var p = pp[0];
+    var v: u64 = 0;
+    while (true) {
+        const c = p[0];
+        if (c < '0' or c > '9') break;
+        v = v * 10 + c - '0';
+        if (v >= INT32_MAX_U) {
+            if (allow_overflow != 0) {
+                v = INT32_MAX_U;
+            } else {
+                return -1;
+            }
+        }
+        p += 1;
+    }
+    pp[0] = p;
+    return @intCast(v);
+}
+
+export fn re_parse_expect(s: *REParseState, pp: [*c][*c]const u8, c: c_int) callconv(.c) c_int {
+    var p = pp[0];
+    if (p[0] != c) return re_parse_error(s, "expecting '%c'", c);
+    p += 1;
+    pp[0] = p;
+    return 0;
+}
+
+export fn is_unicode_char(c: c_int) callconv(.c) c_int {
+    return @intFromBool((c >= '0' and c <= '9') or
+        (c >= 'A' and c <= 'Z') or
+        (c >= 'a' and c <= 'z') or
+        (c == '_'));
+}
+
+export fn find_group_name(s: *REParseState, name: [*c]const u8, emit_group_index: c_int) callconv(.c) c_int {
+    var p: [*c]const u8 = s.group_names.buf;
+    if (p == null) return 0;
+    const buf_end = s.group_names.buf + s.group_names.size;
+    const name_len = strlen(name);
+    var capture_index: c_int = 1;
+    var n: c_int = 0;
+    while (ptrLt(p, buf_end)) {
+        const len = strlen(p);
+        if (len == name_len and memcmp(@ptrCast(name), @ptrCast(p), name_len) == 0) {
+            if (emit_group_index != 0) _ = __dbuf_putc(&s.byte_code, @intCast(capture_index));
+            n += 1;
+        }
+        p += len + LRE_GROUP_NAME_TRAILER_LEN;
+        capture_index += 1;
+    }
+    return n;
+}
+
+export fn is_duplicate_group_name(s: *REParseState, name: [*c]const u8, scope: c_int) callconv(.c) c_int {
+    var p: [*c]const u8 = s.group_names.buf;
+    if (p == null) return 0;
+    const buf_end = s.group_names.buf + s.group_names.size;
+    const name_len = strlen(name);
+    while (ptrLt(p, buf_end)) {
+        const len = strlen(p);
+        if (len == name_len and memcmp(@ptrCast(name), @ptrCast(p), name_len) == 0) {
+            const scope1: c_int = p[len + 1];
+            if (scope == scope1) return 1; // TRUE
+        }
+        p += len + LRE_GROUP_NAME_TRAILER_LEN;
+    }
+    return 0;
+}
+
+export fn re_parse_modifiers(s: *REParseState, pp: [*c][*c]const u8) callconv(.c) c_int {
+    var p = pp[0];
+    var mask: c_int = 0;
+    while (true) {
+        var val: c_int = undefined;
+        if (p[0] == 'i') {
+            val = LRE_FLAG_IGNORECASE;
+        } else if (p[0] == 'm') {
+            val = LRE_FLAG_MULTILINE;
+        } else if (p[0] == 's') {
+            val = LRE_FLAG_DOTALL;
+        } else {
+            break;
+        }
+        if ((mask & val) != 0) return re_parse_error(s, "duplicate modifier: '%c'", @as(c_int, p[0]));
+        mask |= val;
+        p += 1;
+    }
+    pp[0] = p;
+    return mask;
+}
+
+export fn update_modifier(val: c_int, add_mask: c_int, remove_mask: c_int, mask: c_int) callconv(.c) c_int {
+    var v = val;
+    if ((add_mask & mask) != 0) v = 1; // TRUE
+    if ((remove_mask & mask) != 0) v = 0; // FALSE
+    return v;
+}

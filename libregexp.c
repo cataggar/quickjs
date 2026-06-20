@@ -622,7 +622,16 @@ int re_emit_goto_u8_u32(REParseState *s, int op, uint32_t arg0, uint32_t arg1, u
 void re_emit_op_u8(REParseState *s, int op, uint32_t val);
 void re_emit_op_u16(REParseState *s, int op, uint32_t val);
 
-static int __attribute__((format(printf, 2, 3))) re_parse_error(REParseState *s, const char *fmt, ...)
+/* The following parser helpers are ported to Zig (libregexp.zig). */
+int parse_digits(const uint8_t **pp, BOOL allow_overflow);
+int re_parse_expect(REParseState *s, const uint8_t **pp, int c);
+BOOL is_unicode_char(int c);
+int find_group_name(REParseState *s, const char *name, BOOL emit_group_index);
+BOOL is_duplicate_group_name(REParseState *s, const char *name, int scope);
+int re_parse_modifiers(REParseState *s, const uint8_t **pp);
+BOOL update_modifier(BOOL val, int add_mask, int remove_mask, int mask);
+
+int __attribute__((format(printf, 2, 3))) re_parse_error(REParseState *s, const char *fmt, ...)
 {
     va_list ap;
     va_start(ap, fmt);
@@ -638,41 +647,9 @@ static int re_parse_out_of_memory(REParseState *s)
 
 /* If allow_overflow is false, return -1 in case of
    overflow. Otherwise return INT32_MAX. */
-static int parse_digits(const uint8_t **pp, BOOL allow_overflow)
-{
-    const uint8_t *p;
-    uint64_t v;
-    int c;
+/* ported to Zig (libregexp.zig) */
 
-    p = *pp;
-    v = 0;
-    for(;;) {
-        c = *p;
-        if (c < '0' || c > '9')
-            break;
-        v = v * 10 + c - '0';
-        if (v >= INT32_MAX) {
-            if (allow_overflow)
-                v = INT32_MAX;
-            else
-                return -1;
-        }
-        p++;
-    }
-    *pp = p;
-    return v;
-}
-
-static int re_parse_expect(REParseState *s, const uint8_t **pp, int c)
-{
-    const uint8_t *p;
-    p = *pp;
-    if (*p != c)
-        return re_parse_error(s, "expecting '%c'", c);
-    p++;
-    *pp = p;
-    return 0;
-}
+/* ported to Zig (libregexp.zig) */
 
 /* Parse an escape sequence, *pp points after the '\':
    allow_utf16 value:
@@ -688,13 +665,7 @@ static int re_parse_expect(REParseState *s, const uint8_t **pp, int c)
 
 #ifdef CONFIG_ALL_UNICODE
 /* XXX: we use the same chars for name and value */
-static BOOL is_unicode_char(int c)
-{
-    return ((c >= '0' && c <= '9') ||
-            (c >= 'A' && c <= 'Z') ||
-            (c >= 'a' && c <= 'z') ||
-            (c == '_'));
-}
+/* ported to Zig (libregexp.zig) */
 
 /* XXX: memory error test */
 static void seq_prop_cb(void *opaque, const uint32_t *seq, int seq_len)
@@ -1593,91 +1564,15 @@ static BOOL re_has_named_captures(REParseState *s)
     return s->has_named_captures;
 }
 
-static int find_group_name(REParseState *s, const char *name, BOOL emit_group_index)
-{
-    const char *p, *buf_end;
-    size_t len, name_len;
-    int capture_index, n;
+/* ported to Zig (libregexp.zig) */
 
-    p = (char *)s->group_names.buf;
-    if (!p)
-        return 0;
-    buf_end = (char *)s->group_names.buf + s->group_names.size;
-    name_len = strlen(name);
-    capture_index = 1;
-    n = 0;
-    while (p < buf_end) {
-        len = strlen(p);
-        if (len == name_len && memcmp(name, p, name_len) == 0) {
-            if (emit_group_index)
-                dbuf_putc(&s->byte_code, capture_index);
-            n++;
-        }
-        p += len + LRE_GROUP_NAME_TRAILER_LEN;
-        capture_index++;
-    }
-    return n;
-}
-
-static BOOL is_duplicate_group_name(REParseState *s, const char *name, int scope)
-{
-    const char *p, *buf_end;
-    size_t len, name_len;
-    int scope1;
-    
-    p = (char *)s->group_names.buf;
-    if (!p)
-        return 0;
-    buf_end = (char *)s->group_names.buf + s->group_names.size;
-    name_len = strlen(name);
-    while (p < buf_end) {
-        len = strlen(p);
-        if (len == name_len && memcmp(name, p, name_len) == 0) {
-            scope1 = (uint8_t)p[len + 1];
-            if (scope == scope1)
-                return TRUE;
-        }
-        p += len + LRE_GROUP_NAME_TRAILER_LEN;
-    }
-    return FALSE;
-}
+/* ported to Zig (libregexp.zig) */
 
 static int re_parse_disjunction(REParseState *s, BOOL is_backward_dir);
 
-static int re_parse_modifiers(REParseState *s, const uint8_t **pp)
-{
-    const uint8_t *p = *pp;
-    int mask = 0;
-    int val;
+/* ported to Zig (libregexp.zig) */
 
-    for(;;) {
-        if (*p == 'i') {
-            val = LRE_FLAG_IGNORECASE;
-        } else if (*p == 'm') {
-            val = LRE_FLAG_MULTILINE;
-        } else if (*p == 's') {
-            val = LRE_FLAG_DOTALL;
-        } else {
-            break;
-        }
-        if (mask & val)
-            return re_parse_error(s, "duplicate modifier: '%c'", *p);
-        mask |= val;
-        p++;
-    }
-    *pp = p;
-    return mask;
-}
-
-static BOOL update_modifier(BOOL val, int add_mask, int remove_mask,
-                            int mask)
-{
-    if (add_mask & mask)
-        val = TRUE;
-    if (remove_mask & mask)
-        val = FALSE;
-    return val;
-}
+/* ported to Zig (libregexp.zig) */
 
 static int re_parse_term(REParseState *s, BOOL is_backward_dir)
 {
