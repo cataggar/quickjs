@@ -485,6 +485,7 @@ static int re_parse_out_of_memory(REParseState *s)
 int parse_unicode_property(REParseState *s, REStringList *cr, const uint8_t **pp, BOOL is_inv, BOOL allow_sequence_prop);
 int parse_class_string_disjunction(REParseState *s, REStringList *cr, const uint8_t **pp);
 int re_parse_char_class(REParseState *s, const uint8_t **pp);
+BOOL re_need_check_adv_and_capture_init(BOOL *pneed_capture_init, const uint8_t *bc_buf, int bc_buf_len);
 int get_class_atom(REParseState *s, REStringList *cr,
                           const uint8_t **pp, BOOL inclass);
 
@@ -513,78 +514,7 @@ int get_class_atom(REParseState *s, REStringList *cr,
 /* need_check_adv: false if the opcodes always advance the char pointer
    need_capture_init: true if all the captures in the atom are not set
 */
-static BOOL re_need_check_adv_and_capture_init(BOOL *pneed_capture_init,
-                                               const uint8_t *bc_buf, int bc_buf_len)
-{
-    int pos, opcode, len;
-    uint32_t val;
-    BOOL need_check_adv, need_capture_init;
-
-    need_check_adv = TRUE;
-    need_capture_init = FALSE;
-    pos = 0;
-    while (pos < bc_buf_len) {
-        opcode = bc_buf[pos];
-        len = reopcode_info[opcode].size;
-        switch(opcode) {
-        case REOP_range:
-        case REOP_range_i:
-            val = get_u16(bc_buf + pos + 1);
-            len += val * 4;
-            need_check_adv = FALSE;
-            break;
-        case REOP_range32:
-        case REOP_range32_i:
-            val = get_u16(bc_buf + pos + 1);
-            len += val * 8;
-            need_check_adv = FALSE;
-            break;
-        case REOP_char:
-        case REOP_char_i:
-        case REOP_char32:
-        case REOP_char32_i:
-        case REOP_dot:
-        case REOP_any:
-        case REOP_space:
-        case REOP_not_space:
-            need_check_adv = FALSE;
-            break;
-        case REOP_line_start:
-        case REOP_line_start_m:
-        case REOP_line_end:
-        case REOP_line_end_m:
-        case REOP_set_i32:
-        case REOP_set_char_pos:
-        case REOP_word_boundary:
-        case REOP_word_boundary_i:
-        case REOP_not_word_boundary:
-        case REOP_not_word_boundary_i:
-        case REOP_prev:
-            /* no effect */
-            break;
-        case REOP_save_start:
-        case REOP_save_end:
-        case REOP_save_reset:
-            break;
-        case REOP_back_reference:
-        case REOP_back_reference_i:
-        case REOP_backward_back_reference:
-        case REOP_backward_back_reference_i:
-            val = bc_buf[pos + 1];
-            len += val;
-            need_capture_init = TRUE;
-            break;
-        default:
-            /* safe behavior: we cannot predict the outcome */
-            need_capture_init = TRUE;
-            goto done;
-        }
-        pos += len;
-    }
- done:
-    *pneed_capture_init = need_capture_init;
-    return need_check_adv;
-}
+/* ported to Zig (libregexp.zig) */
 
 /* ported to Zig (libregexp.zig) */
 

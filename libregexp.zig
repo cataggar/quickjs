@@ -2226,3 +2226,53 @@ export fn re_parse_char_class(s: *REParseState, pp: [*c][*c]const u8) callconv(.
     re_string_list_free(cr);
     return 0;
 }
+
+// ===========================================================================
+// Parser: re_need_check_adv_and_capture_init — scan an atom's bytecode.
+// ===========================================================================
+
+// need_check_adv: false if the opcodes always advance the char pointer.
+// need_capture_init: true if all the captures in the atom are not set.
+export fn re_need_check_adv_and_capture_init(pneed_capture_init: [*c]c_int, bc_buf: [*c]const u8, bc_buf_len: c_int) callconv(.c) c_int {
+    var need_check_adv: c_int = 1;
+    var need_capture_init: c_int = 0;
+    var pos: c_int = 0;
+    blk: {
+        while (pos < bc_buf_len) {
+            const opcode: u32 = bc_buf[@intCast(pos)];
+            var len: c_int = zig_reopcode_size[opcode];
+            switch (opcode) {
+                REOP.range, REOP.range_i => {
+                    const val = get_u16(bc_buf + @as(usize, @intCast(pos)) + 1);
+                    len += @as(c_int, @intCast(val)) * 4;
+                    need_check_adv = 0;
+                },
+                REOP.range32, REOP.range32_i => {
+                    const val = get_u16(bc_buf + @as(usize, @intCast(pos)) + 1);
+                    len += @as(c_int, @intCast(val)) * 8;
+                    need_check_adv = 0;
+                },
+                REOP.char, REOP.char_i, REOP.char32, REOP.char32_i, REOP.dot, REOP.any, REOP.space, REOP.not_space => {
+                    need_check_adv = 0;
+                },
+                REOP.line_start, REOP.line_start_m, REOP.line_end, REOP.line_end_m, REOP.set_i32, REOP.set_char_pos, REOP.word_boundary, REOP.word_boundary_i, REOP.not_word_boundary, REOP.not_word_boundary_i, REOP.prev => {
+                    // no effect
+                },
+                REOP.save_start, REOP.save_end, REOP.save_reset => {},
+                REOP.back_reference, REOP.back_reference_i, REOP.backward_back_reference, REOP.backward_back_reference_i => {
+                    const val: c_int = bc_buf[@intCast(pos + 1)];
+                    len += val;
+                    need_capture_init = 1;
+                },
+                else => {
+                    // safe behavior: we cannot predict the outcome
+                    need_capture_init = 1;
+                    break :blk;
+                },
+            }
+            pos += len;
+        }
+    }
+    pneed_capture_init[0] = need_capture_init;
+    return need_check_adv;
+}
