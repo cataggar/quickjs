@@ -164,3 +164,72 @@ export fn lre_parse_escape(pp: [*c][*c]const u8, allow_utf16: c_int) callconv(.c
     pp[0] = p;
     return @intCast(c);
 }
+
+// ---------------------------------------------------------------------------
+// compute_register_count — walk the compiled bytecode to size the register
+// stack and patch register indices. Opcode sizes/values come from C exports.
+// ---------------------------------------------------------------------------
+
+const RE_HEADER_LEN_C = 8; // RE_HEADER_LEN
+
+extern const zig_reopcode_size: [*]const u8;
+extern const zig_REGISTER_COUNT_MAX: c_int;
+extern const zig_REOP_set_i32: c_int;
+extern const zig_REOP_set_char_pos: c_int;
+extern const zig_REOP_check_advance: c_int;
+extern const zig_REOP_loop: c_int;
+extern const zig_REOP_loop_split_goto_first: c_int;
+extern const zig_REOP_loop_split_next_first: c_int;
+extern const zig_REOP_loop_check_adv_split_goto_first: c_int;
+extern const zig_REOP_loop_check_adv_split_next_first: c_int;
+extern const zig_REOP_range: c_int;
+extern const zig_REOP_range_i: c_int;
+extern const zig_REOP_range32: c_int;
+extern const zig_REOP_range32_i: c_int;
+extern const zig_REOP_back_reference: c_int;
+extern const zig_REOP_back_reference_i: c_int;
+extern const zig_REOP_backward_back_reference: c_int;
+extern const zig_REOP_backward_back_reference_i: c_int;
+
+export fn compute_register_count(bc_buf_in: [*c]u8, bc_buf_len_in: c_int) callconv(.c) c_int {
+    var stack_size: c_int = 0;
+    var stack_size_max: c_int = 0;
+    const bc_buf = bc_buf_in + RE_HEADER_LEN_C;
+    const bc_buf_len = bc_buf_len_in - RE_HEADER_LEN_C;
+    var pos: c_int = 0;
+    while (pos < bc_buf_len) {
+        const opcode = bc_buf[@intCast(pos)];
+        var len: c_int = zig_reopcode_size[opcode];
+        if (opcode == zig_REOP_set_i32 or opcode == zig_REOP_set_char_pos) {
+            bc_buf[@intCast(pos + 1)] = @intCast(stack_size);
+            stack_size += 1;
+            if (stack_size > stack_size_max) {
+                if (stack_size > zig_REGISTER_COUNT_MAX) return -1;
+                stack_size_max = stack_size;
+            }
+        } else if (opcode == zig_REOP_check_advance or opcode == zig_REOP_loop or
+            opcode == zig_REOP_loop_split_goto_first or opcode == zig_REOP_loop_split_next_first)
+        {
+            stack_size -= 1;
+            bc_buf[@intCast(pos + 1)] = @intCast(stack_size);
+        } else if (opcode == zig_REOP_loop_check_adv_split_goto_first or
+            opcode == zig_REOP_loop_check_adv_split_next_first)
+        {
+            stack_size -= 2;
+            bc_buf[@intCast(pos + 1)] = @intCast(stack_size);
+        } else if (opcode == zig_REOP_range or opcode == zig_REOP_range_i) {
+            const val = get_u16(bc_buf + @as(usize, @intCast(pos)) + 1);
+            len += @as(c_int, @intCast(val)) * 4;
+        } else if (opcode == zig_REOP_range32 or opcode == zig_REOP_range32_i) {
+            const val = get_u16(bc_buf + @as(usize, @intCast(pos)) + 1);
+            len += @as(c_int, @intCast(val)) * 8;
+        } else if (opcode == zig_REOP_back_reference or opcode == zig_REOP_back_reference_i or
+            opcode == zig_REOP_backward_back_reference or opcode == zig_REOP_backward_back_reference_i)
+        {
+            const val = bc_buf[@intCast(pos + 1)];
+            len += @as(c_int, val);
+        }
+        pos += len;
+    }
+    return stack_size_max;
+}

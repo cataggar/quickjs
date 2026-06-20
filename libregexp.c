@@ -2326,68 +2326,8 @@ static int re_parse_disjunction(REParseState *s, BOOL is_backward_dir)
 
 /* Allocate the registers as a stack. The control flow is recursive so
    the analysis can be linear. */
-static int compute_register_count(uint8_t *bc_buf, int bc_buf_len)
-{
-    int stack_size, stack_size_max, pos, opcode, len;
-    uint32_t val;
-
-    stack_size = 0;
-    stack_size_max = 0;
-    bc_buf += RE_HEADER_LEN;
-    bc_buf_len -= RE_HEADER_LEN;
-    pos = 0;
-    while (pos < bc_buf_len) {
-        opcode = bc_buf[pos];
-        len = reopcode_info[opcode].size;
-        assert(opcode < REOP_COUNT);
-        assert((pos + len) <= bc_buf_len);
-        switch(opcode) {
-        case REOP_set_i32:
-        case REOP_set_char_pos:
-            bc_buf[pos + 1] = stack_size;
-            stack_size++;
-            if (stack_size > stack_size_max) {
-                if (stack_size > REGISTER_COUNT_MAX)
-                    return -1;
-                stack_size_max = stack_size;
-            }
-            break;
-        case REOP_check_advance:
-        case REOP_loop:
-        case REOP_loop_split_goto_first:
-        case REOP_loop_split_next_first:
-            assert(stack_size > 0);
-            stack_size--;
-            bc_buf[pos + 1] = stack_size;
-            break;
-        case REOP_loop_check_adv_split_goto_first:
-        case REOP_loop_check_adv_split_next_first:
-            assert(stack_size >= 2);
-            stack_size -= 2;
-            bc_buf[pos + 1] = stack_size;
-            break;
-        case REOP_range:
-        case REOP_range_i:
-            val = get_u16(bc_buf + pos + 1);
-            len += val * 4;
-            break;
-        case REOP_range32:
-        case REOP_range32_i:
-            val = get_u16(bc_buf + pos + 1);
-            len += val * 8;
-            break;
-        case REOP_back_reference:
-        case REOP_back_reference_i:
-        case REOP_backward_back_reference:
-        case REOP_backward_back_reference_i:
-            val = bc_buf[pos + 1];
-            len += val;
-            break;
-        }
-        pos += len;
-    }
-    return stack_size_max;
-}
+/* compute_register_count is ported to Zig (libregexp.zig). */
+int compute_register_count(uint8_t *bc_buf, int bc_buf_len);
 
 static void *lre_bytecode_realloc(void *opaque, void *ptr, size_t size)
 {
@@ -3307,3 +3247,24 @@ int main(int argc, char **argv)
     return 0;
 }
 #endif
+
+/* Exports for the Zig port (libregexp.zig). REOpCode is a 1-byte struct
+   { uint8_t size; }, so reopcode_info can be viewed as a flat size array. */
+const uint8_t *const zig_reopcode_size = (const uint8_t *)reopcode_info;
+const int zig_REGISTER_COUNT_MAX = REGISTER_COUNT_MAX;
+const int zig_REOP_set_i32        = REOP_set_i32;
+const int zig_REOP_set_char_pos   = REOP_set_char_pos;
+const int zig_REOP_check_advance  = REOP_check_advance;
+const int zig_REOP_loop           = REOP_loop;
+const int zig_REOP_loop_split_goto_first = REOP_loop_split_goto_first;
+const int zig_REOP_loop_split_next_first = REOP_loop_split_next_first;
+const int zig_REOP_loop_check_adv_split_goto_first = REOP_loop_check_adv_split_goto_first;
+const int zig_REOP_loop_check_adv_split_next_first = REOP_loop_check_adv_split_next_first;
+const int zig_REOP_range          = REOP_range;
+const int zig_REOP_range_i        = REOP_range_i;
+const int zig_REOP_range32        = REOP_range32;
+const int zig_REOP_range32_i      = REOP_range32_i;
+const int zig_REOP_back_reference          = REOP_back_reference;
+const int zig_REOP_back_reference_i        = REOP_back_reference_i;
+const int zig_REOP_backward_back_reference   = REOP_backward_back_reference;
+const int zig_REOP_backward_back_reference_i = REOP_backward_back_reference_i;
