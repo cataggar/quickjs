@@ -477,188 +477,22 @@ static int re_parse_out_of_memory(REParseState *s)
 /* ported to Zig (libregexp.zig) */
 
 /* XXX: memory error test */
-static void seq_prop_cb(void *opaque, const uint32_t *seq, int seq_len)
-{
-    REStringList *sl = opaque;
-    re_string_add(sl, seq_len, seq);
-}
+/* ported to Zig (libregexp.zig) */
 
-static int parse_unicode_property(REParseState *s, REStringList *cr,
-                                  const uint8_t **pp, BOOL is_inv,
-                                  BOOL allow_sequence_prop)
-{
-    const uint8_t *p;
-    char name[64], value[64];
-    char *q;
-    BOOL script_ext;
-    int ret;
-
-    p = *pp;
-    if (*p != '{')
-        return re_parse_error(s, "expecting '{' after \\p");
-    p++;
-    q = name;
-    while (is_unicode_char(*p)) {
-        if ((q - name) >= sizeof(name) - 1)
-            goto unknown_property_name;
-        *q++ = *p++;
-    }
-    *q = '\0';
-    q = value;
-    if (*p == '=') {
-        p++;
-        while (is_unicode_char(*p)) {
-            if ((q - value) >= sizeof(value) - 1)
-                return re_parse_error(s, "unknown unicode property value");
-            *q++ = *p++;
-        }
-    }
-    *q = '\0';
-    if (*p != '}')
-        return re_parse_error(s, "expecting '}'");
-    p++;
-    //    printf("name=%s value=%s\n", name, value);
-
-    if (!strcmp(name, "Script") || !strcmp(name, "sc")) {
-        script_ext = FALSE;
-        goto do_script;
-    } else if (!strcmp(name, "Script_Extensions") || !strcmp(name, "scx")) {
-        script_ext = TRUE;
-    do_script:
-        re_string_list_init(s, cr);
-        ret = unicode_script(&cr->cr, value, script_ext);
-        if (ret) {
-            re_string_list_free(cr);
-            if (ret == -2)
-                return re_parse_error(s, "unknown unicode script");
-            else
-                goto out_of_memory;
-        }
-    } else if (!strcmp(name, "General_Category") || !strcmp(name, "gc")) {
-        re_string_list_init(s, cr);
-        ret = unicode_general_category(&cr->cr, value);
-        if (ret) {
-            re_string_list_free(cr);
-            if (ret == -2)
-                return re_parse_error(s, "unknown unicode general category");
-            else
-                goto out_of_memory;
-        }
-    } else if (value[0] == '\0') {
-        re_string_list_init(s, cr);
-        ret = unicode_general_category(&cr->cr, name);
-        if (ret == -1) {
-            re_string_list_free(cr);
-            goto out_of_memory;
-        }
-        if (ret < 0) {
-            ret = unicode_prop(&cr->cr, name);
-            if (ret == -1) {
-                re_string_list_free(cr);
-                goto out_of_memory;
-            }
-        }
-        if (ret < 0 && !is_inv && allow_sequence_prop) {
-            CharRange cr_tmp;
-            cr_init(&cr_tmp, s->opaque, lre_realloc);
-            ret = unicode_sequence_prop(name, seq_prop_cb, cr, &cr_tmp);
-            cr_free(&cr_tmp);
-            if (ret == -1) {
-                re_string_list_free(cr);
-                goto out_of_memory;
-            }
-        }
-        if (ret < 0)
-            goto unknown_property_name;
-    } else {
-    unknown_property_name:
-        return re_parse_error(s, "unknown unicode property name");
-    }
-
-    /* the ordering of case folding and inversion  differs with
-       unicode_sets. 'unicode_sets' ordering is more consistent */
-    /* XXX: the spec seems incorrect, we do it as the other engines
-       seem to do it. */
-    if (s->ignore_case && s->unicode_sets) {
-        if (re_string_list_canonicalize(s, cr, s->is_unicode)) {
-            re_string_list_free(cr);
-            goto out_of_memory;
-        }
-    }
-    if (is_inv) {
-        if (cr_invert(&cr->cr)) {
-            re_string_list_free(cr);
-            goto out_of_memory;
-        }
-    }
-    if (s->ignore_case && !s->unicode_sets) {
-        if (re_string_list_canonicalize(s, cr, s->is_unicode)) {
-            re_string_list_free(cr);
-            goto out_of_memory;
-        }
-    }
-    *pp = p;
-    return 0;
- out_of_memory:
-    return re_parse_out_of_memory(s);
-}
+/* ported to Zig (libregexp.zig) */
 #endif /* CONFIG_ALL_UNICODE */
 
-static int get_class_atom(REParseState *s, REStringList *cr,
+int parse_unicode_property(REParseState *s, REStringList *cr, const uint8_t **pp, BOOL is_inv, BOOL allow_sequence_prop);
+int parse_class_string_disjunction(REParseState *s, REStringList *cr, const uint8_t **pp);
+int get_class_atom(REParseState *s, REStringList *cr,
                           const uint8_t **pp, BOOL inclass);
 
-static int parse_class_string_disjunction(REParseState *s, REStringList *cr,
-                                          const uint8_t **pp)
-{
-    const uint8_t *p;
-    DynBuf str;
-    int c;
-    
-    p = *pp;
-    if (*p != '{')
-        return re_parse_error(s, "expecting '{' after \\q");
-
-    dbuf_init2(&str, s->opaque, lre_realloc);
-    re_string_list_init(s, cr);
-    
-    p++;
-    for(;;) {
-        str.size = 0;
-        while (*p != '}' && *p != '|') {
-            c = get_class_atom(s, NULL, &p, FALSE);
-            if (c < 0)
-                goto fail;
-            if (dbuf_put_u32(&str, c)) {
-                re_parse_out_of_memory(s);
-                goto fail;
-            }
-        }
-        if (re_string_add(cr, str.size / 4, (uint32_t *)str.buf)) {
-            re_parse_out_of_memory(s);
-            goto fail;
-        }
-        if (*p == '}')
-            break;
-        p++;
-    }
-    if (s->ignore_case) {
-        if (re_string_list_canonicalize(s, cr, TRUE))
-            goto fail;
-    }
-    p++; /* skip the '}' */
-    dbuf_free(&str);
-    *pp = p;
-    return 0;
- fail:
-    dbuf_free(&str);
-    re_string_list_free(cr);
-    return -1;
-}
+/* ported to Zig (libregexp.zig) */
 
 /* return -1 if error otherwise the character or a class range
    (CLASS_RANGE_BASE) if cr != NULL. In case of class range, 'cr' is
    initialized. Otherwise, it is ignored. */
-static int get_class_atom(REParseState *s, REStringList *cr,
+int get_class_atom(REParseState *s, REStringList *cr,
                           const uint8_t **pp, BOOL inclass)
 {
     const uint8_t *p;

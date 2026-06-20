@@ -1694,3 +1694,165 @@ export fn re_emit_string_list(s: *REParseState, sl: *const REStringList) callcon
     }
     return 0;
 }
+
+// ===========================================================================
+// Parser: \p{...} and \q{...} class parsing (calls into C get_class_atom).
+// ===========================================================================
+
+extern fn dbuf_init2(s: *DynBuf, opaque_ptr: ?*anyopaque, realloc_func: ?*const DynBufReallocFunc) callconv(.c) void;
+extern fn dbuf_free(s: *DynBuf) callconv(.c) void;
+extern fn unicode_script(cr: *CharRange, name: [*c]const u8, is_ext: c_int) callconv(.c) c_int;
+extern fn unicode_general_category(cr: *CharRange, name: [*c]const u8) callconv(.c) c_int;
+extern fn unicode_prop(cr: *CharRange, name: [*c]const u8) callconv(.c) c_int;
+const SeqPropCB = *const fn (opaque_ptr: ?*anyopaque, buf: [*c]const u32, len: c_int) callconv(.c) void;
+extern fn unicode_sequence_prop(name: [*c]const u8, cb: SeqPropCB, opaque_ptr: ?*anyopaque, cr: *CharRange) callconv(.c) c_int;
+extern fn get_class_atom(s: *REParseState, cr: ?*REStringList, pp: [*c][*c]const u8, inclass: c_int) callconv(.c) c_int;
+
+fn seq_prop_cb(opaque_ptr: ?*anyopaque, seq: [*c]const u32, seq_len: c_int) callconv(.c) void {
+    const sl: *REStringList = @ptrCast(@alignCast(opaque_ptr));
+    _ = re_string_add(sl, seq_len, seq);
+}
+
+export fn parse_unicode_property(s: *REParseState, cr: *REStringList, pp: [*c][*c]const u8, is_inv: c_int, allow_sequence_prop: c_int) callconv(.c) c_int {
+    var p = pp[0];
+    var name: [64]u8 = undefined;
+    var value: [64]u8 = undefined;
+    if (p[0] != '{') return re_parse_error(s, "expecting '{' after \\p");
+    p += 1;
+    var qi: usize = 0;
+    while (is_unicode_char(p[0]) != 0) {
+        if (qi >= name.len - 1) return re_parse_error(s, "unknown unicode property name");
+        name[qi] = p[0];
+        qi += 1;
+        p += 1;
+    }
+    name[qi] = 0;
+    var vi: usize = 0;
+    if (p[0] == '=') {
+        p += 1;
+        while (is_unicode_char(p[0]) != 0) {
+            if (vi >= value.len - 1) return re_parse_error(s, "unknown unicode property value");
+            value[vi] = p[0];
+            vi += 1;
+            p += 1;
+        }
+    }
+    value[vi] = 0;
+    if (p[0] != '}') return re_parse_error(s, "expecting '}'");
+    p += 1;
+
+    const nm: [*c]const u8 = &name;
+    const vl: [*c]const u8 = &value;
+    if (strcmp(nm, "Script") == 0 or strcmp(nm, "sc") == 0 or strcmp(nm, "Script_Extensions") == 0 or strcmp(nm, "scx") == 0) {
+        const script_ext: c_int = if (strcmp(nm, "Script_Extensions") == 0 or strcmp(nm, "scx") == 0) 1 else 0;
+        re_string_list_init(s, cr);
+        const ret = unicode_script(&cr.cr, vl, script_ext);
+        if (ret != 0) {
+            re_string_list_free(cr);
+            if (ret == -2) return re_parse_error(s, "unknown unicode script");
+            return re_parse_error(s, "out of memory");
+        }
+    } else if (strcmp(nm, "General_Category") == 0 or strcmp(nm, "gc") == 0) {
+        re_string_list_init(s, cr);
+        const ret = unicode_general_category(&cr.cr, vl);
+        if (ret != 0) {
+            re_string_list_free(cr);
+            if (ret == -2) return re_parse_error(s, "unknown unicode general category");
+            return re_parse_error(s, "out of memory");
+        }
+    } else if (value[0] == 0) {
+        re_string_list_init(s, cr);
+        var ret = unicode_general_category(&cr.cr, nm);
+        if (ret == -1) {
+            re_string_list_free(cr);
+            return re_parse_error(s, "out of memory");
+        }
+        if (ret < 0) {
+            ret = unicode_prop(&cr.cr, nm);
+            if (ret == -1) {
+                re_string_list_free(cr);
+                return re_parse_error(s, "out of memory");
+            }
+        }
+        if (ret < 0 and is_inv == 0 and allow_sequence_prop != 0) {
+            var cr_tmp: CharRange = undefined;
+            cr_init(&cr_tmp, s.opaque_ptr, &lre_realloc);
+            ret = unicode_sequence_prop(nm, &seq_prop_cb, @ptrCast(cr), &cr_tmp);
+            cr_free(&cr_tmp);
+            if (ret == -1) {
+                re_string_list_free(cr);
+                return re_parse_error(s, "out of memory");
+            }
+        }
+        if (ret < 0) return re_parse_error(s, "unknown unicode property name");
+    } else {
+        return re_parse_error(s, "unknown unicode property name");
+    }
+
+    // case-folding/inversion ordering differs with unicode_sets
+    if (s.ignore_case != 0 and s.unicode_sets != 0) {
+        if (re_string_list_canonicalize(s, cr, s.is_unicode) != 0) {
+            re_string_list_free(cr);
+            return re_parse_error(s, "out of memory");
+        }
+    }
+    if (is_inv != 0) {
+        if (cr_invert(&cr.cr) != 0) {
+            re_string_list_free(cr);
+            return re_parse_error(s, "out of memory");
+        }
+    }
+    if (s.ignore_case != 0 and s.unicode_sets == 0) {
+        if (re_string_list_canonicalize(s, cr, s.is_unicode) != 0) {
+            re_string_list_free(cr);
+            return re_parse_error(s, "out of memory");
+        }
+    }
+    pp[0] = p;
+    return 0;
+}
+
+export fn parse_class_string_disjunction(s: *REParseState, cr: *REStringList, pp: [*c][*c]const u8) callconv(.c) c_int {
+    var p = pp[0];
+    if (p[0] != '{') return re_parse_error(s, "expecting '{' after \\q");
+    var str: DynBuf = undefined;
+    dbuf_init2(&str, s.opaque_ptr, &lre_realloc);
+    re_string_list_init(s, cr);
+    p += 1;
+    while (true) {
+        str.size = 0;
+        while (p[0] != '}' and p[0] != '|') {
+            const c = get_class_atom(s, null, &p, 0);
+            if (c < 0) {
+                dbuf_free(&str);
+                re_string_list_free(cr);
+                return -1;
+            }
+            if (__dbuf_put_u32(&str, @bitCast(c)) != 0) {
+                _ = re_parse_error(s, "out of memory");
+                dbuf_free(&str);
+                re_string_list_free(cr);
+                return -1;
+            }
+        }
+        if (re_string_add(cr, @intCast(str.size / 4), @ptrCast(@alignCast(str.buf))) != 0) {
+            _ = re_parse_error(s, "out of memory");
+            dbuf_free(&str);
+            re_string_list_free(cr);
+            return -1;
+        }
+        if (p[0] == '}') break;
+        p += 1;
+    }
+    if (s.ignore_case != 0) {
+        if (re_string_list_canonicalize(s, cr, 1) != 0) {
+            dbuf_free(&str);
+            re_string_list_free(cr);
+            return -1;
+        }
+    }
+    p += 1; // skip '}'
+    dbuf_free(&str);
+    pp[0] = p;
+    return 0;
+}
