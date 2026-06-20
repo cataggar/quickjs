@@ -1494,3 +1494,203 @@ export fn re_string_add(s: *REStringList, len: c_int, buf: [*c]const u32) callco
     if (re_string_find(s, len, buf, 1) < 0) return -1;
     return 0;
 }
+
+// ===========================================================================
+// Parser: string-list set ops, canonicalization, emission; cr_init_char_range.
+// ===========================================================================
+
+extern fn abort() callconv(.c) noreturn;
+const RqsortCmp = *const fn (a: ?*const anyopaque, b: ?*const anyopaque, arg: ?*anyopaque) callconv(.c) c_int;
+extern fn rqsort(base: ?*anyopaque, nmemb: usize, size: usize, cmp: RqsortCmp, arg: ?*anyopaque) callconv(.c) void;
+extern fn cr_realloc(cr: *CharRange, size: c_int) callconv(.c) c_int;
+extern fn cr_invert(cr: *CharRange) callconv(.c) c_int;
+extern fn cr_regexp_canonicalize(cr: *CharRange, is_unicode: c_int) callconv(.c) c_int;
+
+const CR_OP_INTER: c_int = 1;
+const CR_OP_SUB: c_int = 3;
+
+inline fn put_u32(p: [*c]u8, val: u32) void {
+    p[0] = @truncate(val);
+    p[1] = @truncate(val >> 8);
+    p[2] = @truncate(val >> 16);
+    p[3] = @truncate(val >> 24);
+}
+
+inline fn cr_add_point(cr: *CharRange, v: u32) c_int {
+    if (cr.len >= cr.size) {
+        if (cr_realloc(cr, cr.len + 1) != 0) return -1;
+    }
+    cr.points[@intCast(cr.len)] = v;
+    cr.len += 1;
+    return 0;
+}
+
+const char_range_d = [_]u16{ 1, 0x0030, 0x0039 + 1 };
+const char_range_s = [_]u16{
+    10,
+    0x0009, 0x000D + 1, 0x0020, 0x0020 + 1, 0x00A0, 0x00A0 + 1,
+    0x1680, 0x1680 + 1, 0x2000, 0x200A + 1, 0x2028, 0x2029 + 1,
+    0x202F, 0x202F + 1, 0x205F, 0x205F + 1, 0x3000, 0x3000 + 1,
+    0xFEFF, 0xFEFF + 1,
+};
+const char_range_w = [_]u16{ 4, 0x0030, 0x0039 + 1, 0x0041, 0x005A + 1, 0x005F, 0x005F + 1, 0x0061, 0x007A + 1 };
+const char_range_table = [_][*]const u16{ &char_range_d, &char_range_s, &char_range_w };
+
+// a = a op b
+export fn re_string_list_op(a: *REStringList, b: *REStringList, op: c_int) callconv(.c) c_int {
+    if (cr_op1(&a.cr, b.cr.points, b.cr.len, op) != 0) return -1;
+    if (op == CR_OP_UNION) {
+        if (b.n_strings != 0) {
+            var i: u32 = 0;
+            while (i < b.hash_size) : (i += 1) {
+                var p = b.hash_table[i];
+                while (p != null) : (p = p.*.next) {
+                    if (re_string_find2(a, @intCast(p.*.len), reStringBuf(p), p.*.hash, 1) < 0) return -1;
+                }
+            }
+        }
+    } else if (op == CR_OP_INTER or op == CR_OP_SUB) {
+        var i: u32 = 0;
+        while (i < a.hash_size) : (i += 1) {
+            var pp: [*c][*c]REString = &a.hash_table[i];
+            while (true) {
+                const p = pp.*;
+                if (p == null) break;
+                var ret = re_string_find2(b, @intCast(p.*.len), reStringBuf(p), p.*.hash, 0);
+                if (op == CR_OP_SUB) ret = @intFromBool(ret == 0);
+                if (ret == 0) {
+                    pp.* = p.*.next;
+                    a.n_strings -= 1;
+                    _ = lre_realloc(a.cr.mem_opaque, @ptrCast(p), 0);
+                } else {
+                    pp = &p.*.next;
+                }
+            }
+        }
+    } else {
+        abort();
+    }
+    return 0;
+}
+
+export fn re_string_list_canonicalize(s1: *REParseState, s: *REStringList, is_unicode: c_int) callconv(.c) c_int {
+    if (cr_regexp_canonicalize(&s.cr, is_unicode) != 0) return -1;
+    if (s.n_strings != 0) {
+        var a_s: REStringList = undefined;
+        const a = &a_s;
+        // XXX: simplify
+        re_string_list_init(s1, a);
+        a.n_strings = s.n_strings;
+        a.hash_size = s.hash_size;
+        a.hash_bits = s.hash_bits;
+        a.hash_table = s.hash_table;
+        s.n_strings = 0;
+        s.hash_size = 0;
+        s.hash_bits = 0;
+        s.hash_table = null;
+        var i: u32 = 0;
+        while (i < a.hash_size) : (i += 1) {
+            var p = a.hash_table[i];
+            while (p != null) : (p = p.*.next) {
+                const pbuf = reStringBuf(p);
+                var j: u32 = 0;
+                while (j < p.*.len) : (j += 1) pbuf[j] = @intCast(lre_canonicalize(pbuf[j], is_unicode));
+                if (re_string_add(s, @intCast(p.*.len), pbuf) != 0) {
+                    re_string_list_free(a);
+                    return -1;
+                }
+            }
+        }
+        re_string_list_free(a);
+    }
+    return 0;
+}
+
+export fn cr_init_char_range(s: *REParseState, cr: *REStringList, c: u32) callconv(.c) c_int {
+    const invert = c & 1;
+    var c_pt = char_range_table[c >> 1];
+    const len: c_int = c_pt[0];
+    c_pt += 1;
+    re_string_list_init(s, cr);
+    var i: c_int = 0;
+    while (i < len * 2) : (i += 1) {
+        if (cr_add_point(&cr.cr, c_pt[@intCast(i)]) != 0) {
+            re_string_list_free(cr);
+            return -1;
+        }
+    }
+    if (invert != 0) {
+        if (cr_invert(&cr.cr) != 0) {
+            re_string_list_free(cr);
+            return -1;
+        }
+    }
+    return 0;
+}
+
+export fn re_emit_string_list(s: *REParseState, sl: *const REStringList) callconv(.c) c_int {
+    if (sl.n_strings == 0) {
+        // simple case: only characters
+        if (re_emit_range(s, &sl.cr) != 0) return -1;
+    } else {
+        // match the longest strings first
+        const raw = lre_realloc(s.opaque_ptr, null, @sizeOf(usize) * sl.n_strings);
+        if (raw == null) {
+            _ = re_parse_error(s, "out of memory");
+            return -1;
+        }
+        const tab: [*c][*c]REString = @ptrCast(@alignCast(raw));
+        var has_empty_string = false;
+        var n: c_int = 0;
+        var i: u32 = 0;
+        while (i < sl.hash_size) : (i += 1) {
+            var p = sl.hash_table[i];
+            while (p != null) : (p = p.*.next) {
+                if (p.*.len == 0) {
+                    has_empty_string = true;
+                } else {
+                    tab[@intCast(n)] = p;
+                    n += 1;
+                }
+            }
+        }
+        rqsort(@ptrCast(tab), @intCast(n), @sizeOf(usize), &re_string_cmp_len, null);
+
+        var last_match_pos: c_int = -1;
+        var ii: c_int = 0;
+        while (ii < n) : (ii += 1) {
+            const p = tab[@intCast(ii)];
+            const is_last = !has_empty_string and sl.cr.len == 0 and ii == (n - 1);
+            var split_pos: c_int = 0;
+            if (!is_last) split_pos = re_emit_op_u32(s, @intCast(REOP.split_next_first), 0);
+            const pbuf = reStringBuf(p);
+            var j: u32 = 0;
+            while (j < p.*.len) : (j += 1) re_emit_char(s, @intCast(pbuf[j]));
+            if (!is_last) {
+                last_match_pos = re_emit_op_u32(s, @intCast(REOP.goto_), @bitCast(last_match_pos));
+                put_u32(s.byte_code.buf + @as(usize, @intCast(split_pos)), @as(u32, @intCast(s.byte_code.size)) -% (@as(u32, @intCast(split_pos)) + 4));
+            }
+        }
+
+        if (sl.cr.len != 0) {
+            // char range
+            const is_last = !has_empty_string;
+            var split_pos: c_int = 0;
+            if (!is_last) split_pos = re_emit_op_u32(s, @intCast(REOP.split_next_first), 0);
+            if (re_emit_range(s, &sl.cr) != 0) {
+                _ = lre_realloc(s.opaque_ptr, raw, 0);
+                return -1;
+            }
+            if (!is_last) put_u32(s.byte_code.buf + @as(usize, @intCast(split_pos)), @as(u32, @intCast(s.byte_code.size)) -% (@as(u32, @intCast(split_pos)) + 4));
+        }
+
+        // patch the 'goto match' chain
+        while (last_match_pos != -1) {
+            const next_pos: c_int = @bitCast(get_u32(s.byte_code.buf + @as(usize, @intCast(last_match_pos))));
+            put_u32(s.byte_code.buf + @as(usize, @intCast(last_match_pos)), @as(u32, @intCast(s.byte_code.size)) -% (@as(u32, @intCast(last_match_pos)) + 4));
+            last_match_pos = next_pos;
+        }
+        _ = lre_realloc(s.opaque_ptr, raw, 0);
+    }
+    return 0;
+}

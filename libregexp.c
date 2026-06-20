@@ -150,6 +150,10 @@ void re_string_list_free(REStringList *s);
 int re_string_find2(REStringList *s, int len, const uint32_t *buf, uint32_t h0, BOOL add_flag);
 int re_string_find(REStringList *s, int len, const uint32_t *buf, BOOL add_flag);
 int re_string_add(REStringList *s, int len, const uint32_t *buf);
+int re_string_list_op(REStringList *a, REStringList *b, int op);
+int re_string_list_canonicalize(REParseState *s1, REStringList *s, BOOL is_unicode);
+int cr_init_char_range(REParseState *s, REStringList *cr, uint32_t c);
+int re_emit_string_list(REParseState *s, const REStringList *sl);
 
 /* ported to Zig (libregexp.zig) */
 
@@ -206,93 +210,9 @@ static __maybe_unused void re_string_list_dump(const char *str, const REStringLi
 
 /* ported to Zig (libregexp.zig) */
 
-/* a = a op b */
-static int re_string_list_op(REStringList *a, REStringList *b, int op)
-{
-    int i, ret;
-    REString *p, **pp;
+/* ported to Zig (libregexp.zig) */
 
-    if (cr_op1(&a->cr, b->cr.points, b->cr.len, op))
-        return -1;
-
-    switch(op) {
-    case CR_OP_UNION:
-        if (b->n_strings != 0) {
-            for(i = 0; i < b->hash_size; i++) {
-                for(p = b->hash_table[i]; p != NULL; p = p->next) {
-                    if (re_string_find2(a, p->len, p->buf, p->hash, TRUE) < 0)
-                        return -1;
-                }
-            }
-        }
-        break;
-    case CR_OP_INTER:
-    case CR_OP_SUB:
-        for(i = 0; i < a->hash_size; i++) {
-            pp = &a->hash_table[i];
-            for(;;) {
-                p = *pp;
-                if (p == NULL)
-                    break;
-                ret = re_string_find2(b, p->len, p->buf, p->hash, FALSE);
-                if (op == CR_OP_SUB)
-                    ret = !ret;
-                if (!ret) {
-                    /* remove it */
-                    *pp = p->next;
-                    a->n_strings--;
-                    lre_realloc(a->cr.mem_opaque, p, 0);
-                } else {
-                    /* keep it */
-                    pp = &p->next;
-                }
-            }
-        }
-        break;
-    default:
-        abort();
-    }
-    return 0;
-}
-
-static int re_string_list_canonicalize(REParseState *s1,
-                                       REStringList *s, BOOL is_unicode)
-{
-    if (cr_regexp_canonicalize(&s->cr, is_unicode))
-        return -1;
-    if (s->n_strings != 0) {
-        REStringList a_s, *a = &a_s;
-        int i, j;
-        REString *p;
-        
-        /* XXX: simplify */
-        re_string_list_init(s1, a);
-
-        a->n_strings = s->n_strings;
-        a->hash_size = s->hash_size;
-        a->hash_bits = s->hash_bits;
-        a->hash_table = s->hash_table;
-        
-        s->n_strings = 0;
-        s->hash_size = 0;
-        s->hash_bits = 0;
-        s->hash_table = NULL;
-
-        for(i = 0; i < a->hash_size; i++) {
-            for(p = a->hash_table[i]; p != NULL; p = p->next) {
-                for(j = 0; j < p->len; j++) {
-                    p->buf[j] = lre_canonicalize(p->buf[j], is_unicode);
-                }
-                if (re_string_add(s, p->len, p->buf)) {
-                    re_string_list_free(a);
-                    return -1;
-                }
-            }
-        }
-        re_string_list_free(a);
-    }
-    return 0;
-}
+/* ported to Zig (libregexp.zig) */
 
 static const uint16_t char_range_d[] = {
     1,
@@ -342,29 +262,7 @@ static const uint16_t * const char_range_table[] = {
     char_range_w,
 };
 
-static int cr_init_char_range(REParseState *s, REStringList *cr, uint32_t c)
-{
-    BOOL invert;
-    const uint16_t *c_pt;
-    int len, i;
-
-    invert = c & 1;
-    c_pt = char_range_table[c >> 1];
-    len = *c_pt++;
-    re_string_list_init(s, cr);
-    for(i = 0; i < len * 2; i++) {
-        if (cr_add_point(&cr->cr, c_pt[i]))
-            goto fail;
-    }
-    if (invert) {
-        if (cr_invert(&cr->cr))
-            goto fail;
-    }
-    return 0;
- fail:
-    re_string_list_free(cr);
-    return -1;
-}
+/* ported to Zig (libregexp.zig) */
 
 #ifdef DUMP_REOP
 static __maybe_unused void lre_dump_bytecode(const uint8_t *buf,
@@ -947,83 +845,7 @@ static int get_class_atom(REParseState *s, REStringList *cr,
 
 /* ported to Zig (libregexp.zig) */
 
-static int re_emit_string_list(REParseState *s, const REStringList *sl)
-{
-    REString **tab, *p;
-    int i, j, split_pos, last_match_pos, n;
-    BOOL has_empty_string, is_last;
-    
-    //    re_string_list_dump("sl", sl);
-    if (sl->n_strings == 0) {
-        /* simple case: only characters */
-        if (re_emit_range(s, &sl->cr))
-            return -1;
-    } else {
-        /* at least one string list is present : match the longest ones first */
-        /* XXX: add a new op_switch opcode to compile as a trie */
-        tab = lre_realloc(s->opaque, NULL, sizeof(tab[0]) * sl->n_strings);
-        if (!tab) {
-            re_parse_out_of_memory(s);
-            return -1;
-        }
-        has_empty_string = FALSE;
-        n = 0;
-        for(i = 0; i < sl->hash_size; i++) {
-            for(p = sl->hash_table[i]; p != NULL; p = p->next) {
-                if (p->len == 0) {
-                    has_empty_string = TRUE;
-                } else {
-                    tab[n++] = p;
-                }
-            }
-        }
-        assert(n <= sl->n_strings);
-        
-        rqsort(tab, n, sizeof(tab[0]), re_string_cmp_len, NULL);
-
-        last_match_pos = -1;
-        for(i = 0; i < n; i++) {
-            p = tab[i];
-            is_last = !has_empty_string && sl->cr.len == 0 && i == (n - 1);
-            if (!is_last)
-                split_pos = re_emit_op_u32(s, REOP_split_next_first, 0);
-            else
-                split_pos = 0;
-            for(j = 0; j < p->len; j++) {
-                re_emit_char(s, p->buf[j]);
-            }
-            if (!is_last) {
-                last_match_pos = re_emit_op_u32(s, REOP_goto, last_match_pos);
-                put_u32(s->byte_code.buf + split_pos, s->byte_code.size - (split_pos + 4));
-            }
-        }
-
-        if (sl->cr.len != 0) {
-            /* char range */
-            is_last = !has_empty_string;
-            if (!is_last)
-                split_pos = re_emit_op_u32(s, REOP_split_next_first, 0);
-            else
-                split_pos = 0; /* not used */
-            if (re_emit_range(s, &sl->cr)) {
-                lre_realloc(s->opaque, tab, 0);
-                return -1;
-            }
-            if (!is_last)
-                put_u32(s->byte_code.buf + split_pos, s->byte_code.size - (split_pos + 4));
-        }
-
-        /* patch the 'goto match' */
-        while (last_match_pos != -1) {
-            int next_pos = get_u32(s->byte_code.buf + last_match_pos);
-            put_u32(s->byte_code.buf + last_match_pos, s->byte_code.size - (last_match_pos + 4));
-            last_match_pos = next_pos;
-        }
-        
-        lre_realloc(s->opaque, tab, 0);
-    }
-    return 0;
-}
+/* ported to Zig (libregexp.zig) */
 
 static int re_parse_nested_class(REParseState *s, REStringList *cr, const uint8_t **pp);
 
