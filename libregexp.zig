@@ -991,6 +991,7 @@ const REParseState = extern struct {
     group_names: DynBuf,
     u: extern union {
         error_msg: [TMP_BUF_SIZE]u8,
+        tmp_buf: [TMP_BUF_SIZE]u8,
     },
 };
 
@@ -2283,7 +2284,6 @@ export fn re_need_check_adv_and_capture_init(pneed_capture_init: [*c]c_int, bc_b
 
 extern fn dbuf_put(s: *DynBuf, data: [*c]const u8, len: usize) callconv(.c) c_int;
 extern fn pstrcpy(buf: [*c]u8, buf_size: c_int, str: [*c]const u8) callconv(.c) void;
-extern fn re_parse_term(s: *REParseState, is_backward_dir: c_int) callconv(.c) c_int;
 
 const LRE_FLAG_STICKY: c_int = 1 << 5;
 
@@ -2419,4 +2419,454 @@ export fn lre_compile(plen: [*c]c_int, error_msg: [*c]u8, error_msg_size: c_int,
     error_msg[0] = 0;
     plen[0] = @intCast(s.byte_code.size);
     return s.byte_code.buf;
+}
+
+// ===========================================================================
+// Parser: re_parse_term — parse one term (atom + optional quantifier).
+// ===========================================================================
+
+const INT32_MAX: c_int = 0x7fffffff;
+
+export fn re_parse_term(s: *REParseState, is_backward_dir: c_int) callconv(.c) c_int {
+    var p = s.buf_ptr;
+    var c: c_int = p[0];
+    var last_atom_start: c_int = -1;
+    var last_capture_count: c_int = 0;
+    var cr_s: REStringList = undefined;
+    const cr = &cr_s;
+
+    atom: {
+        normal_char_blk: {
+            parse_class_atom_blk: {
+                switch (c) {
+                    '^' => {
+                        p += 1;
+                        re_emit_op(s, @intCast(if (s.multi_line != 0) REOP.line_start_m else REOP.line_start));
+                        break :atom;
+                    },
+                    '$' => {
+                        p += 1;
+                        re_emit_op(s, @intCast(if (s.multi_line != 0) REOP.line_end_m else REOP.line_end));
+                        break :atom;
+                    },
+                    '.' => {
+                        p += 1;
+                        last_atom_start = @intCast(s.byte_code.size);
+                        last_capture_count = s.capture_count;
+                        if (is_backward_dir != 0) re_emit_op(s, @intCast(REOP.prev));
+                        re_emit_op(s, @intCast(if (s.dotall != 0) REOP.any else REOP.dot));
+                        if (is_backward_dir != 0) re_emit_op(s, @intCast(REOP.prev));
+                        break :atom;
+                    },
+                    '{' => {
+                        if (s.is_unicode != 0) {
+                            return re_parse_error(s, "syntax error");
+                        } else if (!is_digit(p[1])) {
+                            break :parse_class_atom_blk; // Annex B: '{' as normal atom
+                        } else {
+                            var p1 = p + 1;
+                            _ = parse_digits(&p1, 1);
+                            if (p1[0] == ',') {
+                                p1 += 1;
+                                if (is_digit(p1[0])) _ = parse_digits(&p1, 1);
+                            }
+                            if (p1[0] != '}') break :parse_class_atom_blk;
+                        }
+                        return re_parse_error(s, "nothing to repeat");
+                    },
+                    '*', '+', '?' => return re_parse_error(s, "nothing to repeat"),
+                    '(' => {
+                        var is_neg = false;
+                        var is_backward_lookahead = false;
+                        var which: u8 = 0; // 1 = lookahead, 2 = capture
+                        if (p[1] == '?') {
+                            if (p[2] == ':') {
+                                p += 3;
+                                last_atom_start = @intCast(s.byte_code.size);
+                                last_capture_count = s.capture_count;
+                                s.buf_ptr = p;
+                                if (re_parse_disjunction(s, is_backward_dir) != 0) return -1;
+                                p = s.buf_ptr;
+                                if (re_parse_expect(s, &p, ')') != 0) return -1;
+                                break :atom;
+                            } else if (p[2] == 'i' or p[2] == 'm' or p[2] == 's' or p[2] == '-') {
+                                p += 2;
+                                var remove_mask: c_int = 0;
+                                const add_mask = re_parse_modifiers(s, &p);
+                                if (add_mask < 0) return -1;
+                                if (p[0] == '-') {
+                                    p += 1;
+                                    remove_mask = re_parse_modifiers(s, &p);
+                                    if (remove_mask < 0) return -1;
+                                }
+                                if ((add_mask == 0 and remove_mask == 0) or (add_mask & remove_mask) != 0)
+                                    return re_parse_error(s, "invalid modifiers");
+                                if (re_parse_expect(s, &p, ':') != 0) return -1;
+                                const saved_ignore_case = s.ignore_case;
+                                const saved_multi_line = s.multi_line;
+                                const saved_dotall = s.dotall;
+                                s.ignore_case = update_modifier(s.ignore_case, add_mask, remove_mask, LRE_FLAG_IGNORECASE);
+                                s.multi_line = update_modifier(s.multi_line, add_mask, remove_mask, LRE_FLAG_MULTILINE);
+                                s.dotall = update_modifier(s.dotall, add_mask, remove_mask, LRE_FLAG_DOTALL);
+                                last_atom_start = @intCast(s.byte_code.size);
+                                last_capture_count = s.capture_count;
+                                s.buf_ptr = p;
+                                if (re_parse_disjunction(s, is_backward_dir) != 0) return -1;
+                                p = s.buf_ptr;
+                                if (re_parse_expect(s, &p, ')') != 0) return -1;
+                                s.ignore_case = saved_ignore_case;
+                                s.multi_line = saved_multi_line;
+                                s.dotall = saved_dotall;
+                                break :atom;
+                            } else if (p[2] == '=' or p[2] == '!') {
+                                is_neg = (p[2] == '!');
+                                is_backward_lookahead = false;
+                                p += 3;
+                                which = 1;
+                            } else if (p[2] == '<' and (p[3] == '=' or p[3] == '!')) {
+                                is_neg = (p[3] == '!');
+                                is_backward_lookahead = true;
+                                p += 4;
+                                which = 1;
+                            } else if (p[2] == '<') {
+                                p += 3;
+                                if (re_parse_group_name(&s.u.tmp_buf, s.u.tmp_buf.len, &p) != 0)
+                                    return re_parse_error(s, "invalid group name");
+                                if (is_duplicate_group_name(s, &s.u.tmp_buf, s.group_name_scope) != 0)
+                                    return re_parse_error(s, "duplicate group name");
+                                _ = dbuf_put(&s.group_names, &s.u.tmp_buf, strlen(&s.u.tmp_buf) + 1);
+                                _ = __dbuf_putc(&s.group_names, s.group_name_scope);
+                                s.has_named_captures = 1;
+                                which = 2;
+                            } else {
+                                return re_parse_error(s, "invalid group");
+                            }
+                        } else {
+                            p += 1;
+                            _ = __dbuf_putc(&s.group_names, 0);
+                            _ = __dbuf_putc(&s.group_names, 0);
+                            which = 2;
+                        }
+                        if (which == 1) {
+                            // lookahead
+                            if (s.is_unicode == 0 and !is_backward_lookahead) {
+                                last_atom_start = @intCast(s.byte_code.size);
+                                last_capture_count = s.capture_count;
+                            }
+                            const pos = re_emit_op_u32(s, @intCast(REOP.lookahead + @as(u32, @intFromBool(is_neg))), 0);
+                            s.buf_ptr = p;
+                            if (re_parse_disjunction(s, @intFromBool(is_backward_lookahead)) != 0) return -1;
+                            p = s.buf_ptr;
+                            if (re_parse_expect(s, &p, ')') != 0) return -1;
+                            re_emit_op(s, @intCast(REOP.lookahead_match + @as(u32, @intFromBool(is_neg))));
+                            if (s.byte_code.err != 0) return -1;
+                            put_u32(s.byte_code.buf + @as(usize, @intCast(pos)), @intCast(@as(c_int, @intCast(s.byte_code.size)) - (pos + 4)));
+                            break :atom;
+                        } else {
+                            // parse_capture
+                            if (s.capture_count >= CAPTURE_COUNT_MAX) return re_parse_error(s, "too many captures");
+                            last_atom_start = @intCast(s.byte_code.size);
+                            last_capture_count = s.capture_count;
+                            const capture_index = s.capture_count;
+                            s.capture_count += 1;
+                            re_emit_op_u8(s, @intCast(REOP.save_start + @as(u32, @intCast(is_backward_dir))), @intCast(capture_index));
+                            s.buf_ptr = p;
+                            if (re_parse_disjunction(s, is_backward_dir) != 0) return -1;
+                            p = s.buf_ptr;
+                            re_emit_op_u8(s, @intCast(@as(c_int, @intCast(REOP.save_start)) + 1 - is_backward_dir), @intCast(capture_index));
+                            if (re_parse_expect(s, &p, ')') != 0) return -1;
+                            break :atom;
+                        }
+                    },
+                    '\\' => {
+                        switch (p[1]) {
+                            'b', 'B' => {
+                                if (p[1] != 'b') {
+                                    re_emit_op(s, @intCast(if (s.ignore_case != 0 and s.is_unicode != 0) REOP.not_word_boundary_i else REOP.not_word_boundary));
+                                } else {
+                                    re_emit_op(s, @intCast(if (s.ignore_case != 0 and s.is_unicode != 0) REOP.word_boundary_i else REOP.word_boundary));
+                                }
+                                p += 2;
+                                break :atom;
+                            },
+                            'k' => {
+                                var p1 = p;
+                                if (p1[2] != '<') {
+                                    if (s.is_unicode != 0 or re_has_named_captures(s) != 0)
+                                        return re_parse_error(s, "expecting group name");
+                                    break :parse_class_atom_blk;
+                                }
+                                p1 += 3;
+                                if (re_parse_group_name(&s.u.tmp_buf, s.u.tmp_buf.len, &p1) != 0) {
+                                    if (s.is_unicode != 0 or re_has_named_captures(s) != 0)
+                                        return re_parse_error(s, "invalid group name");
+                                    break :parse_class_atom_blk;
+                                }
+                                var is_forward = false;
+                                var dummy_res: c_int = undefined;
+                                var n = find_group_name(s, &s.u.tmp_buf, 0);
+                                if (n == 0) {
+                                    n = re_parse_captures(s, &dummy_res, &s.u.tmp_buf, 0);
+                                    if (n == 0) {
+                                        if (s.is_unicode != 0 or re_has_named_captures(s) != 0)
+                                            return re_parse_error(s, "group name not defined");
+                                        break :parse_class_atom_blk;
+                                    }
+                                    is_forward = true;
+                                }
+                                last_atom_start = @intCast(s.byte_code.size);
+                                last_capture_count = s.capture_count;
+                                re_emit_op_u8(s, @intCast(@as(c_int, @intCast(REOP.back_reference)) + 2 * is_backward_dir + s.ignore_case), @intCast(n));
+                                if (is_forward) {
+                                    _ = re_parse_captures(s, &dummy_res, &s.u.tmp_buf, 1);
+                                } else {
+                                    _ = find_group_name(s, &s.u.tmp_buf, 1);
+                                }
+                                p = p1;
+                                break :atom;
+                            },
+                            '0' => {
+                                p += 2;
+                                c = 0;
+                                if (s.is_unicode != 0) {
+                                    if (is_digit(p[0])) return re_parse_error(s, "invalid decimal escape in regular expression");
+                                } else {
+                                    if (p[0] >= '0' and p[0] <= '7') {
+                                        c = p[0] - '0';
+                                        p += 1;
+                                        if (p[0] >= '0' and p[0] <= '7') {
+                                            c = (c << 3) + p[0] - '0';
+                                            p += 1;
+                                        }
+                                    }
+                                }
+                                break :normal_char_blk;
+                            },
+                            '1', '2', '3', '4', '5', '6', '7', '8', '9' => {
+                                p += 1;
+                                const q = p;
+                                c = parse_digits(&p, 0);
+                                if (c < 0 or (c >= s.capture_count and c >= re_count_captures(s))) {
+                                    if (s.is_unicode == 0) {
+                                        p = q;
+                                        if (p[0] <= '7') {
+                                            c = 0;
+                                            if (p[0] <= '3') {
+                                                c = p[0] - '0';
+                                                p += 1;
+                                            }
+                                            if (p[0] >= '0' and p[0] <= '7') {
+                                                c = (c << 3) + p[0] - '0';
+                                                p += 1;
+                                                if (p[0] >= '0' and p[0] <= '7') {
+                                                    c = (c << 3) + p[0] - '0';
+                                                    p += 1;
+                                                }
+                                            }
+                                        } else {
+                                            c = p[0];
+                                            p += 1;
+                                        }
+                                        break :normal_char_blk;
+                                    }
+                                    return re_parse_error(s, "back reference out of range in regular expression");
+                                }
+                                last_atom_start = @intCast(s.byte_code.size);
+                                last_capture_count = s.capture_count;
+                                re_emit_op_u8(s, @intCast(@as(c_int, @intCast(REOP.back_reference)) + 2 * is_backward_dir + s.ignore_case), 1);
+                                _ = __dbuf_putc(&s.byte_code, @intCast(c));
+                                break :atom;
+                            },
+                            else => break :parse_class_atom_blk,
+                        }
+                    },
+                    '[' => {
+                        last_atom_start = @intCast(s.byte_code.size);
+                        last_capture_count = s.capture_count;
+                        if (is_backward_dir != 0) re_emit_op(s, @intCast(REOP.prev));
+                        if (re_parse_char_class(s, &p) != 0) return -1;
+                        if (is_backward_dir != 0) re_emit_op(s, @intCast(REOP.prev));
+                        break :atom;
+                    },
+                    ']', '}' => {
+                        if (s.is_unicode != 0) return re_parse_error(s, "syntax error");
+                        break :parse_class_atom_blk;
+                    },
+                    else => break :parse_class_atom_blk,
+                }
+            }
+            // parse_class_atom:
+            const cc = get_class_atom(s, cr, &p, 0);
+            if (cc < 0) return -1;
+            c = cc;
+        }
+        // normal_char:
+        last_atom_start = @intCast(s.byte_code.size);
+        last_capture_count = s.capture_count;
+        if (is_backward_dir != 0) re_emit_op(s, @intCast(REOP.prev));
+        if (@as(u32, @bitCast(c)) >= CLASS_RANGE_BASE) {
+            var ret: c_int = 0;
+            if (@as(u32, @bitCast(c)) == CLASS_RANGE_BASE + CHAR_RANGE_s) {
+                re_emit_op(s, @intCast(REOP.space));
+            } else if (@as(u32, @bitCast(c)) == CLASS_RANGE_BASE + CHAR_RANGE_S) {
+                re_emit_op(s, @intCast(REOP.not_space));
+            } else {
+                ret = re_emit_string_list(s, cr);
+            }
+            re_string_list_free(cr);
+            if (ret != 0) return -1;
+        } else {
+            if (s.ignore_case != 0) c = lre_canonicalize(@bitCast(c), s.is_unicode);
+            re_emit_char(s, c);
+        }
+        if (is_backward_dir != 0) re_emit_op(s, @intCast(REOP.prev));
+    }
+
+    // quantifier
+    if (last_atom_start >= 0) {
+        c = p[0];
+        var quant_min: c_int = 0;
+        var quant_max: c_int = 0;
+        var do_quant = true;
+        switch (c) {
+            '*' => {
+                p += 1;
+                quant_min = 0;
+                quant_max = INT32_MAX;
+            },
+            '+' => {
+                p += 1;
+                quant_min = 1;
+                quant_max = INT32_MAX;
+            },
+            '?' => {
+                p += 1;
+                quant_min = 0;
+                quant_max = 1;
+            },
+            '{' => {
+                const p1 = p;
+                if (!is_digit(p[1])) {
+                    if (s.is_unicode != 0) return re_parse_error(s, "invalid repetition count");
+                    do_quant = false; // normal atom
+                } else {
+                    p += 1;
+                    quant_min = parse_digits(&p, 1);
+                    quant_max = quant_min;
+                    if (p[0] == ',') {
+                        p += 1;
+                        if (is_digit(p[0])) {
+                            quant_max = parse_digits(&p, 1);
+                            if (quant_max < quant_min) return re_parse_error(s, "invalid repetition count");
+                        } else {
+                            quant_max = INT32_MAX;
+                        }
+                    }
+                    if (p[0] != '}' and s.is_unicode == 0) {
+                        p = p1; // Annex B normal atom
+                        do_quant = false;
+                    } else {
+                        if (re_parse_expect(s, &p, '}') != 0) return -1;
+                    }
+                }
+            },
+            else => do_quant = false,
+        }
+        if (do_quant) {
+            var greedy: c_int = 1;
+            if (p[0] == '?') {
+                p += 1;
+                greedy = 0;
+            }
+            var need_capture_init: c_int = undefined;
+            var add_zero_advance_check = re_need_check_adv_and_capture_init(&need_capture_init, s.byte_code.buf + @as(usize, @intCast(last_atom_start)), @as(c_int, @intCast(s.byte_code.size)) - last_atom_start);
+            var len: c_int = undefined;
+            var pos: c_int = undefined;
+
+            if (need_capture_init != 0 and last_capture_count != s.capture_count) {
+                if (dbuf_insert(&s.byte_code, last_atom_start, 3) != 0) return re_parse_error(s, "out of memory");
+                var pp = last_atom_start;
+                s.byte_code.buf[@intCast(pp)] = @intCast(REOP.save_reset);
+                pp += 1;
+                s.byte_code.buf[@intCast(pp)] = @intCast(last_capture_count);
+                pp += 1;
+                s.byte_code.buf[@intCast(pp)] = @intCast(s.capture_count - 1);
+            }
+
+            len = @as(c_int, @intCast(s.byte_code.size)) - last_atom_start;
+            if (quant_min == 0) {
+                if (need_capture_init == 0 and last_capture_count != s.capture_count) {
+                    if (dbuf_insert(&s.byte_code, last_atom_start, 3) != 0) return re_parse_error(s, "out of memory");
+                    s.byte_code.buf[@intCast(last_atom_start)] = @intCast(REOP.save_reset);
+                    last_atom_start += 1;
+                    s.byte_code.buf[@intCast(last_atom_start)] = @intCast(last_capture_count);
+                    last_atom_start += 1;
+                    s.byte_code.buf[@intCast(last_atom_start)] = @intCast(s.capture_count - 1);
+                    last_atom_start += 1;
+                }
+                if (quant_max == 0) {
+                    s.byte_code.size = @intCast(last_atom_start);
+                } else if (quant_max == 1 or quant_max == INT32_MAX) {
+                    const has_goto: c_int = @intFromBool(quant_max == INT32_MAX);
+                    if (dbuf_insert(&s.byte_code, last_atom_start, 5 + add_zero_advance_check * 2) != 0) return re_parse_error(s, "out of memory");
+                    s.byte_code.buf[@intCast(last_atom_start)] = @intCast(@as(c_int, @intCast(REOP.split_goto_first)) + greedy);
+                    put_u32(s.byte_code.buf + @as(usize, @intCast(last_atom_start)) + 1, @bitCast(len + 5 * has_goto + add_zero_advance_check * 2 * 2));
+                    if (add_zero_advance_check != 0) {
+                        s.byte_code.buf[@intCast(last_atom_start + 1 + 4)] = @intCast(REOP.set_char_pos);
+                        s.byte_code.buf[@intCast(last_atom_start + 1 + 4 + 1)] = 0;
+                        re_emit_op_u8(s, @intCast(REOP.check_advance), 0);
+                    }
+                    if (has_goto != 0) _ = re_emit_goto(s, @intCast(REOP.goto_), @bitCast(last_atom_start));
+                } else {
+                    if (dbuf_insert(&s.byte_code, last_atom_start, 11 + add_zero_advance_check * 2) != 0) return re_parse_error(s, "out of memory");
+                    pos = last_atom_start;
+                    s.byte_code.buf[@intCast(pos)] = @intCast(@as(c_int, @intCast(REOP.split_goto_first)) + greedy);
+                    pos += 1;
+                    put_u32(s.byte_code.buf + @as(usize, @intCast(pos)), @bitCast(6 + add_zero_advance_check * 2 + len + 10));
+                    pos += 4;
+                    s.byte_code.buf[@intCast(pos)] = @intCast(REOP.set_i32);
+                    pos += 1;
+                    s.byte_code.buf[@intCast(pos)] = 0;
+                    pos += 1;
+                    put_u32(s.byte_code.buf + @as(usize, @intCast(pos)), @bitCast(quant_max));
+                    pos += 4;
+                    last_atom_start = pos;
+                    if (add_zero_advance_check != 0) {
+                        s.byte_code.buf[@intCast(pos)] = @intCast(REOP.set_char_pos);
+                        pos += 1;
+                        s.byte_code.buf[@intCast(pos)] = 0;
+                        pos += 1;
+                    }
+                    _ = re_emit_goto_u8_u32(s, @intCast(@as(c_int, @intCast(if (add_zero_advance_check != 0) REOP.loop_check_adv_split_next_first else REOP.loop_split_next_first)) - greedy), 0, @bitCast(quant_max), @bitCast(last_atom_start));
+                }
+            } else if (quant_min == 1 and quant_max == INT32_MAX and add_zero_advance_check == 0) {
+                _ = re_emit_goto(s, @intCast(@as(c_int, @intCast(REOP.split_next_first)) - greedy), @bitCast(last_atom_start));
+            } else {
+                if (quant_min == quant_max) add_zero_advance_check = 0;
+                if (dbuf_insert(&s.byte_code, last_atom_start, 6 + add_zero_advance_check * 2) != 0) return re_parse_error(s, "out of memory");
+                pos = last_atom_start;
+                s.byte_code.buf[@intCast(pos)] = @intCast(REOP.set_i32);
+                pos += 1;
+                s.byte_code.buf[@intCast(pos)] = 0;
+                pos += 1;
+                put_u32(s.byte_code.buf + @as(usize, @intCast(pos)), @bitCast(quant_max));
+                pos += 4;
+                last_atom_start = pos;
+                if (add_zero_advance_check != 0) {
+                    s.byte_code.buf[@intCast(pos)] = @intCast(REOP.set_char_pos);
+                    pos += 1;
+                    s.byte_code.buf[@intCast(pos)] = 0;
+                    pos += 1;
+                }
+                if (quant_min == quant_max) {
+                    _ = re_emit_goto_u8(s, @intCast(REOP.loop), 0, @bitCast(last_atom_start));
+                } else {
+                    _ = re_emit_goto_u8_u32(s, @intCast(@as(c_int, @intCast(if (add_zero_advance_check != 0) REOP.loop_check_adv_split_next_first else REOP.loop_split_next_first)) - greedy), 0, @bitCast(quant_max - quant_min), @bitCast(last_atom_start));
+                }
+            }
+            last_atom_start = -1;
+        }
+    }
+    s.buf_ptr = p;
+    return 0;
 }
