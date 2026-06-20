@@ -2276,3 +2276,147 @@ export fn re_need_check_adv_and_capture_init(pneed_capture_init: [*c]c_int, bc_b
     pneed_capture_init[0] = need_capture_init;
     return need_check_adv;
 }
+
+// ===========================================================================
+// Parser: recursive shell (alternative/disjunction) + lre_compile entry point.
+// ===========================================================================
+
+extern fn dbuf_put(s: *DynBuf, data: [*c]const u8, len: usize) callconv(.c) c_int;
+extern fn pstrcpy(buf: [*c]u8, buf_size: c_int, str: [*c]const u8) callconv(.c) void;
+extern fn re_parse_term(s: *REParseState, is_backward_dir: c_int) callconv(.c) c_int;
+
+const LRE_FLAG_STICKY: c_int = 1 << 5;
+
+inline fn put_u16(p: [*c]u8, val: u16) void {
+    p[0] = @truncate(val);
+    p[1] = @truncate(val >> 8);
+}
+
+fn lre_bytecode_realloc(opaque_ptr: ?*anyopaque, ptr: ?*anyopaque, size: usize) callconv(.c) ?*anyopaque {
+    // the bytecode cannot be larger than 2G; leave slack to avoid overflows
+    if (size > (0x7fffffff / 2)) return null;
+    return lre_realloc(opaque_ptr, ptr, size);
+}
+
+fn re_parse_alternative(s: *REParseState, is_backward_dir: c_int) c_int {
+    const start = s.byte_code.size;
+    while (true) {
+        const p = s.buf_ptr;
+        if (ptrGe(p, s.buf_end)) break;
+        if (p[0] == '|' or p[0] == ')') break;
+        const term_start = s.byte_code.size;
+        const ret = re_parse_term(s, is_backward_dir);
+        if (ret != 0) return ret;
+        if (is_backward_dir != 0) {
+            // reverse the order of the terms
+            const end = s.byte_code.size;
+            const term_size = end - term_start;
+            if (dbuf_claim(&s.byte_code, term_size) != 0) return -1;
+            _ = memmove(@ptrCast(s.byte_code.buf + start + term_size), @ptrCast(s.byte_code.buf + start), end - start);
+            _ = memcpy(@ptrCast(s.byte_code.buf + start), @ptrCast(s.byte_code.buf + end), term_size);
+        }
+    }
+    return 0;
+}
+
+export fn re_parse_disjunction(s: *REParseState, is_backward_dir: c_int) callconv(.c) c_int {
+    if (lre_check_stack_overflow(s.opaque_ptr, 0) != 0) return re_parse_error(s, "stack overflow");
+    const start: c_int = @intCast(s.byte_code.size);
+    if (re_parse_alternative(s, is_backward_dir) != 0) return -1;
+    while (s.buf_ptr[0] == '|') {
+        s.buf_ptr += 1;
+        var len: c_int = @as(c_int, @intCast(s.byte_code.size)) - start;
+        // insert a split before the first alternative
+        if (dbuf_insert(&s.byte_code, start, 5) != 0) return re_parse_error(s, "out of memory");
+        s.byte_code.buf[@intCast(start)] = @intCast(REOP.split_next_first);
+        put_u32(s.byte_code.buf + @as(usize, @intCast(start)) + 1, @bitCast(len + 5));
+        const pos = re_emit_op_u32(s, @intCast(REOP.goto_), 0);
+        s.group_name_scope +%= 1;
+        if (re_parse_alternative(s, is_backward_dir) != 0) return -1;
+        // patch the goto
+        len = @as(c_int, @intCast(s.byte_code.size)) - (pos + 4);
+        put_u32(s.byte_code.buf + @as(usize, @intCast(pos)), @bitCast(len));
+    }
+    return 0;
+}
+
+fn lre_compile_error(s: *REParseState, error_msg: [*c]u8, error_msg_size: c_int, plen: [*c]c_int) [*c]u8 {
+    dbuf_free(&s.byte_code);
+    dbuf_free(&s.group_names);
+    pstrcpy(error_msg, error_msg_size, &s.u.error_msg);
+    plen[0] = 0;
+    return null;
+}
+
+// 'buf' must be a zero terminated UTF-8 string of length buf_len.
+export fn lre_compile(plen: [*c]c_int, error_msg: [*c]u8, error_msg_size: c_int, buf: [*c]const u8, buf_len: usize, re_flags: c_int, opaque_ptr: ?*anyopaque) callconv(.c) [*c]u8 {
+    var s_s: REParseState = undefined;
+    const s = &s_s;
+    _ = memset(@ptrCast(s), 0, @sizeOf(REParseState));
+    s.opaque_ptr = opaque_ptr;
+    s.buf_ptr = buf;
+    s.buf_end = buf + buf_len;
+    s.buf_start = buf;
+    s.re_flags = re_flags;
+    s.is_unicode = @intFromBool((re_flags & (LRE_FLAG_UNICODE | LRE_FLAG_UNICODE_SETS)) != 0);
+    const is_sticky = (re_flags & LRE_FLAG_STICKY) != 0;
+    s.ignore_case = @intFromBool((re_flags & LRE_FLAG_IGNORECASE) != 0);
+    s.multi_line = @intFromBool((re_flags & LRE_FLAG_MULTILINE) != 0);
+    s.dotall = @intFromBool((re_flags & LRE_FLAG_DOTALL) != 0);
+    s.unicode_sets = @intFromBool((re_flags & LRE_FLAG_UNICODE_SETS) != 0);
+    s.capture_count = 1;
+    s.total_capture_count = -1;
+    s.has_named_captures = -1;
+
+    dbuf_init2(&s.byte_code, opaque_ptr, &lre_bytecode_realloc);
+    dbuf_init2(&s.group_names, opaque_ptr, &lre_realloc);
+
+    _ = __dbuf_put_u16(&s.byte_code, @truncate(@as(u32, @bitCast(re_flags)))); // flags
+    _ = __dbuf_putc(&s.byte_code, 0); // capture count
+    _ = __dbuf_putc(&s.byte_code, 0); // stack size
+    _ = __dbuf_put_u32(&s.byte_code, 0); // bytecode length
+
+    if (!is_sticky) {
+        // iterate thru all positions (about the same as .*?( ... ) )
+        _ = re_emit_op_u32(s, @intCast(REOP.split_goto_first), 1 + 5);
+        re_emit_op(s, @intCast(REOP.any));
+        _ = re_emit_op_u32(s, @intCast(REOP.goto_), @bitCast(@as(i32, -(5 + 1 + 5))));
+    }
+    re_emit_op_u8(s, @intCast(REOP.save_start), 0);
+
+    if (re_parse_disjunction(s, 0) != 0)
+        return lre_compile_error(s, error_msg, error_msg_size, plen);
+
+    re_emit_op_u8(s, @intCast(REOP.save_end), 0);
+    re_emit_op(s, @intCast(REOP.match));
+
+    if (s.buf_ptr[0] != 0) {
+        _ = re_parse_error(s, "extraneous characters at the end");
+        return lre_compile_error(s, error_msg, error_msg_size, plen);
+    }
+    if (s.byte_code.err != 0) {
+        _ = re_parse_error(s, "out of memory");
+        return lre_compile_error(s, error_msg, error_msg_size, plen);
+    }
+
+    const register_count = compute_register_count(s.byte_code.buf, @intCast(s.byte_code.size));
+    if (register_count < 0) {
+        _ = re_parse_error(s, "too many imbricated quantifiers");
+        return lre_compile_error(s, error_msg, error_msg_size, plen);
+    }
+
+    s.byte_code.buf[RE_HEADER_CAPTURE_COUNT] = @intCast(s.capture_count);
+    s.byte_code.buf[RE_HEADER_REGISTER_COUNT] = @intCast(register_count);
+    put_u32(s.byte_code.buf + RE_HEADER_BYTECODE_LEN, @intCast(s.byte_code.size - RE_HEADER_LEN));
+
+    // add the named groups if needed
+    if (s.group_names.size > @as(usize, @intCast(s.capture_count - 1)) * LRE_GROUP_NAME_TRAILER_LEN) {
+        _ = dbuf_put(&s.byte_code, s.group_names.buf, s.group_names.size);
+        put_u16(s.byte_code.buf + RE_HEADER_FLAGS, @intCast(lre_get_flags(s.byte_code.buf) | LRE_FLAG_NAMED_GROUPS));
+    }
+    dbuf_free(&s.group_names);
+
+    error_msg[0] = 0;
+    plen[0] = @intCast(s.byte_code.size);
+    return s.byte_code.buf;
+}

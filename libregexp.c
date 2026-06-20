@@ -530,13 +530,13 @@ int get_class_atom(REParseState *s, REStringList *cr,
 
 /* ported to Zig (libregexp.zig) */
 
-static int re_parse_disjunction(REParseState *s, BOOL is_backward_dir);
+int re_parse_disjunction(REParseState *s, BOOL is_backward_dir);
 
 /* ported to Zig (libregexp.zig) */
 
 /* ported to Zig (libregexp.zig) */
 
-static int re_parse_term(REParseState *s, BOOL is_backward_dir)
+int re_parse_term(REParseState *s, BOOL is_backward_dir)
 {
     const uint8_t *p;
     int c, last_atom_start, quant_min, quant_max, last_capture_count;
@@ -1063,189 +1063,22 @@ static int re_parse_term(REParseState *s, BOOL is_backward_dir)
     return re_parse_out_of_memory(s);
 }
 
-static int re_parse_alternative(REParseState *s, BOOL is_backward_dir)
-{
-    const uint8_t *p;
-    int ret;
-    size_t start, term_start, end, term_size;
+/* ported to Zig (libregexp.zig) */
 
-    start = s->byte_code.size;
-    for(;;) {
-        p = s->buf_ptr;
-        if (p >= s->buf_end)
-            break;
-        if (*p == '|' || *p == ')')
-            break;
-        term_start = s->byte_code.size;
-        ret = re_parse_term(s, is_backward_dir);
-        if (ret)
-            return ret;
-        if (is_backward_dir) {
-            /* reverse the order of the terms (XXX: inefficient, but
-               speed is not really critical here) */
-            end = s->byte_code.size;
-            term_size = end - term_start;
-            if (dbuf_claim(&s->byte_code, term_size))
-                return -1;
-            memmove(s->byte_code.buf + start + term_size,
-                    s->byte_code.buf + start,
-                    end - start);
-            memcpy(s->byte_code.buf + start, s->byte_code.buf + end,
-                   term_size);
-        }
-    }
-    return 0;
-}
-
-static int re_parse_disjunction(REParseState *s, BOOL is_backward_dir)
-{
-    int start, len, pos;
-
-    if (lre_check_stack_overflow(s->opaque, 0))
-        return re_parse_error(s, "stack overflow");
-
-    start = s->byte_code.size;
-    if (re_parse_alternative(s, is_backward_dir))
-        return -1;
-    while (*s->buf_ptr == '|') {
-        s->buf_ptr++;
-
-        len = s->byte_code.size - start;
-
-        /* insert a split before the first alternative */
-        if (dbuf_insert(&s->byte_code, start, 5)) {
-            return re_parse_out_of_memory(s);
-        }
-        s->byte_code.buf[start] = REOP_split_next_first;
-        put_u32(s->byte_code.buf + start + 1, len + 5);
-
-        pos = re_emit_op_u32(s, REOP_goto, 0);
-
-        s->group_name_scope++;
-        
-        if (re_parse_alternative(s, is_backward_dir))
-            return -1;
-
-        /* patch the goto */
-        len = s->byte_code.size - (pos + 4);
-        put_u32(s->byte_code.buf + pos, len);
-    }
-    return 0;
-}
+/* ported to Zig (libregexp.zig) */
 
 /* Allocate the registers as a stack. The control flow is recursive so
    the analysis can be linear. */
 /* compute_register_count is ported to Zig (libregexp.zig). */
 int compute_register_count(uint8_t *bc_buf, int bc_buf_len);
 
-static void *lre_bytecode_realloc(void *opaque, void *ptr, size_t size)
-{
-    if (size > (INT32_MAX / 2)) {
-        /* the bytecode cannot be larger than 2G. Leave some slack to 
-           avoid some overflows. */
-        return NULL;
-    } else {
-        return lre_realloc(opaque, ptr, size);
-    }
-}
+/* ported to Zig (libregexp.zig) */
 
 /* 'buf' must be a zero terminated UTF-8 string of length buf_len.
    Return NULL if error and allocate an error message in *perror_msg,
    otherwise the compiled bytecode and its length in plen.
 */
-uint8_t *lre_compile(int *plen, char *error_msg, int error_msg_size,
-                     const char *buf, size_t buf_len, int re_flags,
-                     void *opaque)
-{
-    REParseState s_s, *s = &s_s;
-    int register_count;
-    BOOL is_sticky;
-
-    memset(s, 0, sizeof(*s));
-    s->opaque = opaque;
-    s->buf_ptr = (const uint8_t *)buf;
-    s->buf_end = s->buf_ptr + buf_len;
-    s->buf_start = s->buf_ptr;
-    s->re_flags = re_flags;
-    s->is_unicode = ((re_flags & (LRE_FLAG_UNICODE | LRE_FLAG_UNICODE_SETS)) != 0);
-    is_sticky = ((re_flags & LRE_FLAG_STICKY) != 0);
-    s->ignore_case = ((re_flags & LRE_FLAG_IGNORECASE) != 0);
-    s->multi_line = ((re_flags & LRE_FLAG_MULTILINE) != 0);
-    s->dotall = ((re_flags & LRE_FLAG_DOTALL) != 0);
-    s->unicode_sets = ((re_flags & LRE_FLAG_UNICODE_SETS) != 0);
-    s->capture_count = 1;
-    s->total_capture_count = -1;
-    s->has_named_captures = -1;
-
-    dbuf_init2(&s->byte_code, opaque, lre_bytecode_realloc);
-    dbuf_init2(&s->group_names, opaque, lre_realloc);
-
-    dbuf_put_u16(&s->byte_code, re_flags); /* first element is the flags */
-    dbuf_putc(&s->byte_code, 0); /* second element is the number of captures */
-    dbuf_putc(&s->byte_code, 0); /* stack size */
-    dbuf_put_u32(&s->byte_code, 0); /* bytecode length */
-
-    if (!is_sticky) {
-        /* iterate thru all positions (about the same as .*?( ... ) )
-           .  We do it without an explicit loop so that lock step
-           thread execution will be possible in an optimized
-           implementation */
-        re_emit_op_u32(s, REOP_split_goto_first, 1 + 5);
-        re_emit_op(s, REOP_any);
-        re_emit_op_u32(s, REOP_goto, -(5 + 1 + 5));
-    }
-    re_emit_op_u8(s, REOP_save_start, 0);
-
-    if (re_parse_disjunction(s, FALSE)) {
-    error:
-        dbuf_free(&s->byte_code);
-        dbuf_free(&s->group_names);
-        pstrcpy(error_msg, error_msg_size, s->u.error_msg);
-        *plen = 0;
-        return NULL;
-    }
-
-    re_emit_op_u8(s, REOP_save_end, 0);
-
-    re_emit_op(s, REOP_match);
-
-    if (*s->buf_ptr != '\0') {
-        re_parse_error(s, "extraneous characters at the end");
-        goto error;
-    }
-
-    if (dbuf_error(&s->byte_code)) {
-        re_parse_out_of_memory(s);
-        goto error;
-    }
-
-    register_count = compute_register_count(s->byte_code.buf, s->byte_code.size);
-    if (register_count < 0) {
-        re_parse_error(s, "too many imbricated quantifiers");
-        goto error;
-    }
-
-    s->byte_code.buf[RE_HEADER_CAPTURE_COUNT] = s->capture_count;
-    s->byte_code.buf[RE_HEADER_REGISTER_COUNT] = register_count;
-    put_u32(s->byte_code.buf + RE_HEADER_BYTECODE_LEN,
-            s->byte_code.size - RE_HEADER_LEN);
-
-    /* add the named groups if needed */
-    if (s->group_names.size > (s->capture_count - 1) * LRE_GROUP_NAME_TRAILER_LEN) {
-        dbuf_put(&s->byte_code, s->group_names.buf, s->group_names.size);
-        put_u16(s->byte_code.buf + RE_HEADER_FLAGS,
-                lre_get_flags(s->byte_code.buf) | LRE_FLAG_NAMED_GROUPS);
-    }
-    dbuf_free(&s->group_names);
-
-#ifdef DUMP_REOP
-    lre_dump_bytecode(s->byte_code.buf, s->byte_code.size);
-#endif
-
-    error_msg[0] = '\0';
-    *plen = s->byte_code.size;
-    return s->byte_code.buf;
-}
+/* ported to Zig (libregexp.zig) */
 
 /* The regexp executor (is_line_terminator, the GET/PEEK/PREV_CHAR macros,
    REExecContext/StackElem, lre_poll_timeout, stack_realloc,
