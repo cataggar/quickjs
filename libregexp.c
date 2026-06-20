@@ -630,6 +630,10 @@ int find_group_name(REParseState *s, const char *name, BOOL emit_group_index);
 BOOL is_duplicate_group_name(REParseState *s, const char *name, int scope);
 int re_parse_modifiers(REParseState *s, const uint8_t **pp);
 BOOL update_modifier(BOOL val, int add_mask, int remove_mask, int mask);
+int re_parse_group_name(char *buf, int buf_size, const uint8_t **pp);
+int re_parse_captures(REParseState *s, int *phas_named_captures, const char *capture_name, BOOL emit_group_index);
+int re_count_captures(REParseState *s);
+BOOL re_has_named_captures(REParseState *s);
 
 int __attribute__((format(printf, 2, 3))) re_parse_error(REParseState *s, const char *fmt, ...)
 {
@@ -1435,134 +1439,15 @@ static BOOL re_need_check_adv_and_capture_init(BOOL *pneed_capture_init,
     return need_check_adv;
 }
 
-/* '*pp' is the first char after '<' */
-static int re_parse_group_name(char *buf, int buf_size, const uint8_t **pp)
-{
-    const uint8_t *p, *p1;
-    uint32_t c, d;
-    char *q;
-
-    p = *pp;
-    q = buf;
-    for(;;) {
-        c = *p;
-        if (c == '\\') {
-            p++;
-            if (*p != 'u')
-                return -1;
-            c = lre_parse_escape(&p, 2); // accept surrogate pairs
-        } else if (c == '>') {
-            break;
-        } else if (c >= 128) {
-            c = unicode_from_utf8(p, UTF8_CHAR_LEN_MAX, &p);
-            if (is_hi_surrogate(c)) {
-                d = unicode_from_utf8(p, UTF8_CHAR_LEN_MAX, &p1);
-                if (is_lo_surrogate(d)) {
-                    c = from_surrogate(c, d);
-                    p = p1;
-                }
-            }
-        } else {
-            p++;
-        }
-        if (c > 0x10FFFF)
-            return -1;
-        if (q == buf) {
-            if (!lre_js_is_ident_first(c))
-                return -1;
-        } else {
-            if (!lre_js_is_ident_next(c))
-                return -1;
-        }
-        if ((q - buf + UTF8_CHAR_LEN_MAX + 1) > buf_size)
-            return -1;
-        if (c < 128) {
-            *q++ = c;
-        } else {
-            q += unicode_to_utf8((uint8_t*)q, c);
-        }
-    }
-    if (q == buf)
-        return -1;
-    *q = '\0';
-    p++;
-    *pp = p;
-    return 0;
-}
+/* ported to Zig (libregexp.zig) */
 
 /* if capture_name = NULL: return the number of captures + 1.
    Otherwise, return the number of matching capture groups  */
-static int re_parse_captures(REParseState *s, int *phas_named_captures,
-                             const char *capture_name, BOOL emit_group_index)
-{
-    const uint8_t *p;
-    int capture_index, n;
-    char name[TMP_BUF_SIZE];
+/* ported to Zig (libregexp.zig) */
 
-    capture_index = 1;
-    n = 0;
-    *phas_named_captures = 0;
-    for (p = s->buf_start; p < s->buf_end; p++) {
-        switch (*p) {
-        case '(':
-            if (p[1] == '?') {
-                if (p[2] == '<' && p[3] != '=' && p[3] != '!') {
-                    *phas_named_captures = 1;
-                    /* potential named capture */
-                    if (capture_name) {
-                        p += 3;
-                        if (re_parse_group_name(name, sizeof(name), &p) == 0) {
-                            if (!strcmp(name, capture_name)) {
-                                if (emit_group_index)
-                                    dbuf_putc(&s->byte_code, capture_index);
-                                n++;
-                            }
-                        }
-                    }
-                    capture_index++;
-                    if (capture_index >= CAPTURE_COUNT_MAX)
-                        goto done;
-                }
-            } else {
-                capture_index++;
-                if (capture_index >= CAPTURE_COUNT_MAX)
-                    goto done;
-            }
-            break;
-        case '\\':
-            p++;
-            break;
-        case '[':
-            for (p += 1 + (*p == ']'); p < s->buf_end && *p != ']'; p++) {
-                if (*p == '\\')
-                    p++;
-            }
-            break;
-        }
-    }
- done:
-    if (capture_name) {
-        return n;
-    } else {
-        return capture_index;
-    }
-}
+/* ported to Zig (libregexp.zig) */
 
-static int re_count_captures(REParseState *s)
-{
-    if (s->total_capture_count < 0) {
-        s->total_capture_count = re_parse_captures(s, &s->has_named_captures,
-                                                   NULL, FALSE);
-    }
-    return s->total_capture_count;
-}
-
-static BOOL re_has_named_captures(REParseState *s)
-{
-    if (s->has_named_captures < 0)
-        re_count_captures(s);
-    return s->has_named_captures;
-}
+/* ported to Zig (libregexp.zig) */
 
 /* ported to Zig (libregexp.zig) */
 

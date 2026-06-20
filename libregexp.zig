@@ -1158,3 +1158,139 @@ export fn update_modifier(val: c_int, add_mask: c_int, remove_mask: c_int, mask:
     if ((remove_mask & mask) != 0) v = 0; // FALSE
     return v;
 }
+
+// ===========================================================================
+// Parser: named-capture machinery (group name parsing + capture counting).
+// ===========================================================================
+
+extern fn strcmp(a: [*c]const u8, b: [*c]const u8) c_int;
+extern fn unicode_to_utf8(buf: [*c]u8, c: c_uint) callconv(.c) c_int;
+extern fn unicode_from_utf8(p: [*c]const u8, max_len: c_int, pp: [*c][*c]const u8) callconv(.c) c_int;
+extern fn lre_is_id_start(c: u32) callconv(.c) c_int;
+extern fn lre_is_id_continue(c: u32) callconv(.c) c_int;
+
+const UNICODE_C_DOLLAR: u8 = 1 << 5;
+const UTF8_CHAR_LEN_MAX: usize = 6;
+const CAPTURE_COUNT_MAX: c_int = 255;
+
+inline fn lre_is_id_start_byte(ch: u8) bool {
+    return (lre_ctype_bits[ch] & (UNICODE_C_UPPER | UNICODE_C_LOWER | UNICODE_C_UNDER | UNICODE_C_DOLLAR)) != 0;
+}
+inline fn lre_is_id_continue_byte(ch: u8) bool {
+    return (lre_ctype_bits[ch] & (UNICODE_C_UPPER | UNICODE_C_LOWER | UNICODE_C_UNDER | UNICODE_C_DOLLAR | UNICODE_C_DIGIT)) != 0;
+}
+inline fn lre_js_is_ident_first(c: u32) bool {
+    if (c < 128) return lre_is_id_start_byte(@intCast(c));
+    return lre_is_id_start(c) != 0;
+}
+inline fn lre_js_is_ident_next(c: u32) bool {
+    if (c < 128) return lre_is_id_continue_byte(@intCast(c));
+    if (c >= 0x200C and c <= 0x200D) return true; // ZWNJ/ZWJ
+    return lre_is_id_continue(c) != 0;
+}
+
+// '*pp' is the first char after '<'.
+export fn re_parse_group_name(buf: [*c]u8, buf_size: c_int, pp: [*c][*c]const u8) callconv(.c) c_int {
+    var p = pp[0];
+    var q: usize = 0;
+    while (true) {
+        var c: u32 = p[0];
+        if (c == '\\') {
+            p += 1;
+            if (p[0] != 'u') return -1;
+            c = @bitCast(lre_parse_escape(&p, 2)); // accept surrogate pairs
+        } else if (c == '>') {
+            break;
+        } else if (c >= 128) {
+            c = @bitCast(unicode_from_utf8(p, @intCast(UTF8_CHAR_LEN_MAX), &p));
+            if (is_hi_surrogate(c)) {
+                var p1: [*c]const u8 = undefined;
+                const d: u32 = @bitCast(unicode_from_utf8(p, @intCast(UTF8_CHAR_LEN_MAX), &p1));
+                if (is_lo_surrogate(d)) {
+                    c = from_surrogate(c, d);
+                    p = p1;
+                }
+            }
+        } else {
+            p += 1;
+        }
+        if (c > 0x10FFFF) return -1;
+        if (q == 0) {
+            if (!lre_js_is_ident_first(c)) return -1;
+        } else {
+            if (!lre_js_is_ident_next(c)) return -1;
+        }
+        if ((q + UTF8_CHAR_LEN_MAX + 1) > @as(usize, @intCast(buf_size))) return -1;
+        if (c < 128) {
+            buf[q] = @intCast(c);
+            q += 1;
+        } else {
+            q += @intCast(unicode_to_utf8(buf + q, c));
+        }
+    }
+    if (q == 0) return -1;
+    buf[q] = 0;
+    p += 1;
+    pp[0] = p;
+    return 0;
+}
+
+// if capture_name == NULL: return number of captures + 1; else number of
+// matching capture groups.
+export fn re_parse_captures(s: *REParseState, phas_named_captures: [*c]c_int, capture_name: [*c]const u8, emit_group_index: c_int) callconv(.c) c_int {
+    var capture_index: c_int = 1;
+    var n: c_int = 0;
+    phas_named_captures[0] = 0;
+    var name: [TMP_BUF_SIZE]u8 = undefined;
+    var p = s.buf_start;
+    done: {
+        while (ptrLt(p, s.buf_end)) : (p += 1) {
+            switch (p[0]) {
+                '(' => {
+                    if (p[1] == '?') {
+                        if (p[2] == '<' and p[3] != '=' and p[3] != '!') {
+                            phas_named_captures[0] = 1;
+                            // potential named capture
+                            if (capture_name != null) {
+                                p += 3;
+                                if (re_parse_group_name(&name, name.len, &p) == 0) {
+                                    if (strcmp(@ptrCast(&name), capture_name) == 0) {
+                                        if (emit_group_index != 0) _ = __dbuf_putc(&s.byte_code, @intCast(capture_index));
+                                        n += 1;
+                                    }
+                                }
+                            }
+                            capture_index += 1;
+                            if (capture_index >= CAPTURE_COUNT_MAX) break :done;
+                        }
+                    } else {
+                        capture_index += 1;
+                        if (capture_index >= CAPTURE_COUNT_MAX) break :done;
+                    }
+                },
+                '\\' => p += 1,
+                '[' => {
+                    p += 1 + @as(usize, @intFromBool(p[0] == ']'));
+                    while (ptrLt(p, s.buf_end) and p[0] != ']') : (p += 1) {
+                        if (p[0] == '\\') p += 1;
+                    }
+                },
+                else => {},
+            }
+        }
+    }
+    if (capture_name != null) return n;
+    return capture_index;
+}
+
+export fn re_count_captures(s: *REParseState) callconv(.c) c_int {
+    if (s.total_capture_count < 0) {
+        s.total_capture_count = re_parse_captures(s, &s.has_named_captures, null, 0);
+    }
+    return s.total_capture_count;
+}
+
+export fn re_has_named_captures(s: *REParseState) callconv(.c) c_int {
+    if (s.has_named_captures < 0) _ = re_count_captures(s);
+    return s.has_named_captures;
+}
