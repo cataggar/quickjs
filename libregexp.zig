@@ -956,3 +956,90 @@ export fn lre_exec(capture: [*c][*c]u8, bc_buf: [*c]const u8, cbuf: [*c]const u8
 extern const zig_REOP_match: c_int;
 extern const zig_REOP_prev: c_int;
 const std = @import("std");
+
+// ===========================================================================
+// Parser: bytecode emit helpers (operate on REParseState.byte_code).
+// ===========================================================================
+
+const DynBufReallocFunc = fn (opaque_ptr: ?*anyopaque, ptr: ?*anyopaque, size: usize) callconv(.c) ?*anyopaque;
+const DynBuf = extern struct {
+    buf: [*c]u8,
+    size: usize,
+    allocated_size: usize,
+    err: c_int,
+    realloc_func: ?*const DynBufReallocFunc,
+    opaque_ptr: ?*anyopaque,
+};
+
+const TMP_BUF_SIZE = 128;
+const REParseState = extern struct {
+    byte_code: DynBuf,
+    buf_ptr: [*c]const u8,
+    buf_end: [*c]const u8,
+    buf_start: [*c]const u8,
+    re_flags: c_int,
+    is_unicode: c_int,
+    unicode_sets: c_int,
+    ignore_case: c_int,
+    multi_line: c_int,
+    dotall: c_int,
+    group_name_scope: u8,
+    capture_count: c_int,
+    total_capture_count: c_int,
+    has_named_captures: c_int,
+    opaque_ptr: ?*anyopaque,
+    group_names: DynBuf,
+    u: extern union {
+        error_msg: [TMP_BUF_SIZE]u8,
+    },
+};
+
+extern fn __dbuf_putc(s: *DynBuf, c: u8) callconv(.c) c_int;
+extern fn __dbuf_put_u16(s: *DynBuf, val: u16) callconv(.c) c_int;
+extern fn __dbuf_put_u32(s: *DynBuf, val: u32) callconv(.c) c_int;
+
+export fn re_emit_op(s: *REParseState, op: c_int) callconv(.c) void {
+    _ = __dbuf_putc(&s.byte_code, @intCast(op));
+}
+
+// return the offset of the u32 value
+export fn re_emit_op_u32(s: *REParseState, op: c_int, val: u32) callconv(.c) c_int {
+    _ = __dbuf_putc(&s.byte_code, @intCast(op));
+    const pos: c_int = @intCast(s.byte_code.size);
+    _ = __dbuf_put_u32(&s.byte_code, val);
+    return pos;
+}
+
+export fn re_emit_goto(s: *REParseState, op: c_int, val: u32) callconv(.c) c_int {
+    _ = __dbuf_putc(&s.byte_code, @intCast(op));
+    const pos: c_int = @intCast(s.byte_code.size);
+    _ = __dbuf_put_u32(&s.byte_code, val -% (@as(u32, @intCast(pos)) + 4));
+    return pos;
+}
+
+export fn re_emit_goto_u8(s: *REParseState, op: c_int, arg: u32, val: u32) callconv(.c) c_int {
+    _ = __dbuf_putc(&s.byte_code, @intCast(op));
+    _ = __dbuf_putc(&s.byte_code, @truncate(arg));
+    const pos: c_int = @intCast(s.byte_code.size);
+    _ = __dbuf_put_u32(&s.byte_code, val -% (@as(u32, @intCast(pos)) + 4));
+    return pos;
+}
+
+export fn re_emit_goto_u8_u32(s: *REParseState, op: c_int, arg0: u32, arg1: u32, val: u32) callconv(.c) c_int {
+    _ = __dbuf_putc(&s.byte_code, @intCast(op));
+    _ = __dbuf_putc(&s.byte_code, @truncate(arg0));
+    _ = __dbuf_put_u32(&s.byte_code, arg1);
+    const pos: c_int = @intCast(s.byte_code.size);
+    _ = __dbuf_put_u32(&s.byte_code, val -% (@as(u32, @intCast(pos)) + 4));
+    return pos;
+}
+
+export fn re_emit_op_u8(s: *REParseState, op: c_int, val: u32) callconv(.c) void {
+    _ = __dbuf_putc(&s.byte_code, @intCast(op));
+    _ = __dbuf_putc(&s.byte_code, @truncate(val));
+}
+
+export fn re_emit_op_u16(s: *REParseState, op: c_int, val: u32) callconv(.c) void {
+    _ = __dbuf_putc(&s.byte_code, @intCast(op));
+    _ = __dbuf_put_u16(&s.byte_code, @truncate(val));
+}

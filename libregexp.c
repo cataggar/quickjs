@@ -613,62 +613,14 @@ static __maybe_unused void lre_dump_bytecode(const uint8_t *buf,
 }
 #endif
 
-static void re_emit_op(REParseState *s, int op)
-{
-    dbuf_putc(&s->byte_code, op);
-}
-
-/* return the offset of the u32 value */
-static int re_emit_op_u32(REParseState *s, int op, uint32_t val)
-{
-    int pos;
-    dbuf_putc(&s->byte_code, op);
-    pos = s->byte_code.size;
-    dbuf_put_u32(&s->byte_code, val);
-    return pos;
-}
-
-static int re_emit_goto(REParseState *s, int op, uint32_t val)
-{
-    int pos;
-    dbuf_putc(&s->byte_code, op);
-    pos = s->byte_code.size;
-    dbuf_put_u32(&s->byte_code, val - (pos + 4));
-    return pos;
-}
-
-static int re_emit_goto_u8(REParseState *s, int op, uint32_t arg, uint32_t val)
-{
-    int pos;
-    dbuf_putc(&s->byte_code, op);
-    dbuf_putc(&s->byte_code, arg);
-    pos = s->byte_code.size;
-    dbuf_put_u32(&s->byte_code, val - (pos + 4));
-    return pos;
-}
-
-static int re_emit_goto_u8_u32(REParseState *s, int op, uint32_t arg0, uint32_t arg1, uint32_t val)
-{
-    int pos;
-    dbuf_putc(&s->byte_code, op);
-    dbuf_putc(&s->byte_code, arg0);
-    dbuf_put_u32(&s->byte_code, arg1);
-    pos = s->byte_code.size;
-    dbuf_put_u32(&s->byte_code, val - (pos + 4));
-    return pos;
-}
-
-static void re_emit_op_u8(REParseState *s, int op, uint32_t val)
-{
-    dbuf_putc(&s->byte_code, op);
-    dbuf_putc(&s->byte_code, val);
-}
-
-static void re_emit_op_u16(REParseState *s, int op, uint32_t val)
-{
-    dbuf_putc(&s->byte_code, op);
-    dbuf_put_u16(&s->byte_code, val);
-}
+/* The bytecode emit helpers are ported to Zig (libregexp.zig). */
+void re_emit_op(REParseState *s, int op);
+int re_emit_op_u32(REParseState *s, int op, uint32_t val);
+int re_emit_goto(REParseState *s, int op, uint32_t val);
+int re_emit_goto_u8(REParseState *s, int op, uint32_t arg, uint32_t val);
+int re_emit_goto_u8_u32(REParseState *s, int op, uint32_t arg0, uint32_t arg1, uint32_t val);
+void re_emit_op_u8(REParseState *s, int op, uint32_t val);
+void re_emit_op_u16(REParseState *s, int op, uint32_t val);
 
 static int __attribute__((format(printf, 2, 3))) re_parse_error(REParseState *s, const char *fmt, ...)
 {
