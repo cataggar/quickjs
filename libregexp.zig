@@ -1706,7 +1706,6 @@ extern fn unicode_general_category(cr: *CharRange, name: [*c]const u8) callconv(
 extern fn unicode_prop(cr: *CharRange, name: [*c]const u8) callconv(.c) c_int;
 const SeqPropCB = *const fn (opaque_ptr: ?*anyopaque, buf: [*c]const u32, len: c_int) callconv(.c) void;
 extern fn unicode_sequence_prop(name: [*c]const u8, cb: SeqPropCB, opaque_ptr: ?*anyopaque, cr: *CharRange) callconv(.c) c_int;
-extern fn get_class_atom(s: *REParseState, cr: ?*REStringList, pp: [*c][*c]const u8, inclass: c_int) callconv(.c) c_int;
 
 fn seq_prop_cb(opaque_ptr: ?*anyopaque, seq: [*c]const u32, seq_len: c_int) callconv(.c) void {
     const sl: *REStringList = @ptrCast(@alignCast(opaque_ptr));
@@ -1855,4 +1854,133 @@ export fn parse_class_string_disjunction(s: *REParseState, cr: *REStringList, pp
     dbuf_free(&str);
     pp[0] = p;
     return 0;
+}
+
+// ===========================================================================
+// Parser: get_class_atom — parse one class atom (char, \d/\s/\w, \p, \q, ...).
+// ===========================================================================
+
+const CHAR_RANGE_d: u32 = 0;
+const CHAR_RANGE_D: u32 = 1;
+const CHAR_RANGE_s: u32 = 2;
+const CHAR_RANGE_S: u32 = 3;
+const CHAR_RANGE_w: u32 = 4;
+const CHAR_RANGE_W: u32 = 5;
+const CLASS_RANGE_BASE: u32 = 0x40000000;
+
+// return -1 if error otherwise the character or a class range (CLASS_RANGE_BASE)
+// if cr != NULL. In case of class range, 'cr' is initialized.
+export fn get_class_atom(s: *REParseState, cr: ?*REStringList, pp: [*c][*c]const u8, inclass: c_int) callconv(.c) c_int {
+    var p = pp[0];
+    var c: u32 = p[0];
+    blk_normal: {
+        blk_done: {
+            switch (c) {
+                '\\' => {
+                    p += 1;
+                    if (ptrGe(p, s.buf_end)) return re_parse_error(s, "unexpected end");
+                    c = p[0];
+                    p += 1;
+                    class_handled: {
+                        default_escape: {
+                            switch (c) {
+                                'd', 'D', 's', 'S', 'w', 'W' => {
+                                    c = switch (c) {
+                                        'd' => CHAR_RANGE_d,
+                                        'D' => CHAR_RANGE_D,
+                                        's' => CHAR_RANGE_s,
+                                        'S' => CHAR_RANGE_S,
+                                        'w' => CHAR_RANGE_w,
+                                        else => CHAR_RANGE_W,
+                                    };
+                                    if (cr == null) break :default_escape;
+                                    if (cr_init_char_range(s, cr.?, c) != 0) return -1;
+                                    c += CLASS_RANGE_BASE;
+                                    break :class_handled;
+                                },
+                                'c' => {
+                                    c = p[0];
+                                    if ((c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or
+                                        (((c >= '0' and c <= '9') or c == '_') and inclass != 0 and s.is_unicode == 0))
+                                    {
+                                        c &= 0x1f;
+                                        p += 1;
+                                    } else if (s.is_unicode != 0) {
+                                        return re_parse_error(s, "invalid escape sequence in regular expression");
+                                    } else {
+                                        p -= 1;
+                                        c = '\\';
+                                    }
+                                    break :class_handled;
+                                },
+                                '-' => {
+                                    if (inclass == 0 and s.is_unicode != 0)
+                                        return re_parse_error(s, "invalid escape sequence in regular expression");
+                                    break :class_handled;
+                                },
+                                '^', '$', '\\', '.', '*', '+', '?', '(', ')', '[', ']', '{', '}', '|', '/' => break :class_handled,
+                                'p', 'P' => {
+                                    if (s.is_unicode != 0 and cr != null) {
+                                        if (parse_unicode_property(s, cr.?, &p, @intFromBool(c == 'P'), s.unicode_sets) != 0) return -1;
+                                        c = CLASS_RANGE_BASE;
+                                        break :class_handled;
+                                    }
+                                    break :default_escape;
+                                },
+                                'q' => {
+                                    if (s.unicode_sets != 0 and cr != null and inclass != 0) {
+                                        if (parse_class_string_disjunction(s, cr.?, &p) != 0) return -1;
+                                        c = CLASS_RANGE_BASE;
+                                        break :class_handled;
+                                    }
+                                    break :default_escape;
+                                },
+                                else => break :default_escape,
+                            }
+                            unreachable;
+                        }
+                        // default_escape:
+                        p -= 1;
+                        const ret = lre_parse_escape(&p, s.is_unicode * 2);
+                        if (ret >= 0) {
+                            c = @bitCast(ret);
+                        } else {
+                            if (s.is_unicode != 0) return re_parse_error(s, "invalid escape sequence in regular expression");
+                            break :blk_normal; // ignore the '\', go to normal_char
+                        }
+                    }
+                    break :blk_done;
+                },
+                0 => {
+                    if (ptrGe(p, s.buf_end)) return re_parse_error(s, "unexpected end");
+                    break :blk_normal; // fall thru to normal_char
+                },
+                '&', '!', '#', '$', '%', '*', '+', ',', '.', ':', ';', '<', '=', '>', '?', '@', '^', '`', '~' => {
+                    if (s.unicode_sets != 0 and p[1] == c)
+                        return re_parse_error(s, "invalid class set operation in regular expression");
+                    break :blk_normal;
+                },
+                '(', ')', '[', ']', '{', '}', '/', '-', '|' => {
+                    if (s.unicode_sets != 0)
+                        return re_parse_error(s, "invalid character in class in regular expression");
+                    break :blk_normal;
+                },
+                else => break :blk_normal,
+            }
+            unreachable;
+        }
+        // blk_done: c is finalized
+        pp[0] = p;
+        return @intCast(c);
+    }
+    // normal_char:
+    if (c >= 128) {
+        c = @bitCast(unicode_from_utf8(p, @intCast(UTF8_CHAR_LEN_MAX), &p));
+        if (c > 0xffff and s.is_unicode == 0)
+            return re_parse_error(s, "malformed unicode char");
+    } else {
+        p += 1;
+    }
+    pp[0] = p;
+    return @intCast(c);
 }
