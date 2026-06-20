@@ -1294,3 +1294,87 @@ export fn re_has_named_captures(s: *REParseState) callconv(.c) c_int {
     if (s.has_named_captures < 0) _ = re_count_captures(s);
     return s.has_named_captures;
 }
+
+// ===========================================================================
+// Parser: char-class emit + REStringList utility helpers.
+// ===========================================================================
+
+extern fn memmove(dest: ?*anyopaque, src: ?*const anyopaque, n: usize) ?*anyopaque;
+extern fn dbuf_claim(s: *DynBuf, len: usize) callconv(.c) c_int;
+
+const CharRange = extern struct {
+    len: c_int,
+    size: c_int,
+    points: [*c]u32,
+    mem_opaque: ?*anyopaque,
+    realloc_func: ?*const DynBufReallocFunc,
+};
+
+const REString = extern struct {
+    next: [*c]REString,
+    hash: u32,
+    len: u32,
+    // uint32_t buf[] flexible array follows
+};
+
+// insert 'len' bytes at position 'pos'. Return < 0 if error.
+export fn dbuf_insert(s: *DynBuf, pos: c_int, len: c_int) callconv(.c) c_int {
+    if (dbuf_claim(s, @intCast(len)) != 0) return -1;
+    const upos: usize = @intCast(pos);
+    const ulen: usize = @intCast(len);
+    _ = memmove(@ptrCast(s.buf + upos + ulen), @ptrCast(s.buf + upos), s.size - upos);
+    s.size += ulen;
+    return 0;
+}
+
+export fn re_string_hash(len: c_int, buf: [*c]const u32) callconv(.c) u32 {
+    var h: u32 = 1;
+    var i: c_int = 0;
+    while (i < len) : (i += 1) h = h *% 263 +% buf[@intCast(i)];
+    return h *% 0x61C88647;
+}
+
+export fn re_emit_range(s: *REParseState, cr: *const CharRange) callconv(.c) c_int {
+    const len: c_int = @intCast(@as(u32, @intCast(cr.len)) / 2);
+    if (len >= 65535) return re_parse_error(s, "too many ranges");
+    if (len == 0) {
+        _ = re_emit_op_u32(s, @intCast(REOP.char32), 0xFFFFFFFF); // -1
+    } else {
+        var high = cr.points[@intCast(cr.len - 1)];
+        if (high == 0xFFFFFFFF) high = cr.points[@intCast(cr.len - 2)];
+        if (high <= 0xffff) {
+            // 16-bit ranges with the convention that 0xffff = infinity
+            re_emit_op_u16(s, @intCast(if (s.ignore_case != 0) REOP.range_i else REOP.range), @intCast(len));
+            var i: c_int = 0;
+            while (i < cr.len) : (i += 2) {
+                _ = __dbuf_put_u16(&s.byte_code, @truncate(cr.points[@intCast(i)]));
+                high = cr.points[@intCast(i + 1)] -% 1;
+                if (high == 0xFFFFFFFF - 1) high = 0xffff;
+                _ = __dbuf_put_u16(&s.byte_code, @truncate(high));
+            }
+        } else {
+            re_emit_op_u16(s, @intCast(if (s.ignore_case != 0) REOP.range32_i else REOP.range32), @intCast(len));
+            var i: c_int = 0;
+            while (i < cr.len) : (i += 2) {
+                _ = __dbuf_put_u32(&s.byte_code, cr.points[@intCast(i)]);
+                _ = __dbuf_put_u32(&s.byte_code, cr.points[@intCast(i + 1)] -% 1);
+            }
+        }
+    }
+    return 0;
+}
+
+export fn re_string_cmp_len(a: ?*const anyopaque, b: ?*const anyopaque, arg: ?*anyopaque) callconv(.c) c_int {
+    _ = arg;
+    const p1: *const REString = @as(*const *const REString, @ptrCast(@alignCast(a))).*;
+    const p2: *const REString = @as(*const *const REString, @ptrCast(@alignCast(b))).*;
+    return @as(c_int, @intFromBool(p1.len < p2.len)) - @as(c_int, @intFromBool(p1.len > p2.len));
+}
+
+export fn re_emit_char(s: *REParseState, c: c_int) callconv(.c) void {
+    if (c <= 0xffff) {
+        re_emit_op_u16(s, @intCast(if (s.ignore_case != 0) REOP.char_i else REOP.char), @intCast(c));
+    } else {
+        _ = re_emit_op_u32(s, @intCast(if (s.ignore_case != 0) REOP.char32_i else REOP.char32), @intCast(c));
+    }
+}

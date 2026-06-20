@@ -119,15 +119,7 @@ static inline int is_digit(int c) {
     return c >= '0' && c <= '9';
 }
 
-/* insert 'len' bytes at position 'pos'. Return < 0 if error. */
-static int dbuf_insert(DynBuf *s, int pos, int len)
-{
-    if (dbuf_claim(s, len))
-        return -1;
-    memmove(s->buf + pos + len, s->buf + pos, s->size - pos);
-    s->size += len;
-    return 0;
-}
+/* ported to Zig (libregexp.zig) */
 
 typedef struct REString {
     struct REString *next;
@@ -147,15 +139,14 @@ typedef struct {
     REString **hash_table;
 } REStringList;
 
-static uint32_t re_string_hash(int len, const uint32_t *buf)
-{
-    int i;
-    uint32_t h;
-    h = 1;
-    for(i = 0; i < len; i++)
-        h = h * 263 + buf[i];
-    return h * 0x61C88647;
-}
+/* The following are ported to Zig (libregexp.zig). */
+int dbuf_insert(DynBuf *s, int pos, int len);
+uint32_t re_string_hash(int len, const uint32_t *buf);
+int re_emit_range(REParseState *s, const CharRange *cr);
+int re_string_cmp_len(const void *a, const void *b, void *arg);
+void re_emit_char(REParseState *s, int c);
+
+/* ported to Zig (libregexp.zig) */
 
 static void re_string_list_init(REParseState *s1, REStringList *s)
 {
@@ -1034,56 +1025,11 @@ static int get_class_atom(REParseState *s, REStringList *cr,
     return c;
 }
 
-static int re_emit_range(REParseState *s, const CharRange *cr)
-{
-    int len, i;
-    uint32_t high;
+/* ported to Zig (libregexp.zig) */
 
-    len = (unsigned)cr->len / 2;
-    if (len >= 65535)
-        return re_parse_error(s, "too many ranges");
-    if (len == 0) {
-        re_emit_op_u32(s, REOP_char32, -1);
-    } else {
-        high = cr->points[cr->len - 1];
-        if (high == UINT32_MAX)
-            high = cr->points[cr->len - 2];
-        if (high <= 0xffff) {
-            /* can use 16 bit ranges with the conversion that 0xffff =
-               infinity */
-            re_emit_op_u16(s, s->ignore_case ? REOP_range_i : REOP_range, len);
-            for(i = 0; i < cr->len; i += 2) {
-                dbuf_put_u16(&s->byte_code, cr->points[i]);
-                high = cr->points[i + 1] - 1;
-                if (high == UINT32_MAX - 1)
-                    high = 0xffff;
-                dbuf_put_u16(&s->byte_code, high);
-            }
-        } else {
-            re_emit_op_u16(s, s->ignore_case ? REOP_range32_i : REOP_range32, len);
-            for(i = 0; i < cr->len; i += 2) {
-                dbuf_put_u32(&s->byte_code, cr->points[i]);
-                dbuf_put_u32(&s->byte_code, cr->points[i + 1] - 1);
-            }
-        }
-    }
-    return 0;
-}
+/* ported to Zig (libregexp.zig) */
 
-static int re_string_cmp_len(const void *a, const void *b, void *arg)
-{
-    REString *p1 = *(REString **)a;
-    REString *p2 = *(REString **)b;
-    return (p1->len < p2->len) - (p1->len > p2->len);
-}
-
-static void re_emit_char(REParseState *s, int c)
-{
-    if (c <= 0xffff)
-        re_emit_op_u16(s, s->ignore_case ? REOP_char_i : REOP_char, c);
-    else
-        re_emit_op_u32(s, s->ignore_case ? REOP_char32_i : REOP_char32, c);
-}
+/* ported to Zig (libregexp.zig) */
 
 static int re_emit_string_list(REParseState *s, const REStringList *sl)
 {
