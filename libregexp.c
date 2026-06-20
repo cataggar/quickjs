@@ -3363,32 +3363,8 @@ int lre_exec(uint8_t **capture,
     return ret;
 }
 
-int lre_get_alloc_count(const uint8_t *bc_buf)
-{
-    return bc_buf[RE_HEADER_CAPTURE_COUNT] * 2 +
-        bc_buf[RE_HEADER_REGISTER_COUNT];
-}
-
-int lre_get_capture_count(const uint8_t *bc_buf)
-{
-    return bc_buf[RE_HEADER_CAPTURE_COUNT];
-}
-
-int lre_get_flags(const uint8_t *bc_buf)
-{
-    return get_u16(bc_buf + RE_HEADER_FLAGS);
-}
-
-/* Return NULL if no group names. Otherwise, return a pointer to
-   'capture_count - 1' zero terminated UTF-8 strings. */
-const char *lre_get_groupnames(const uint8_t *bc_buf)
-{
-    uint32_t re_bytecode_len;
-    if ((lre_get_flags(bc_buf) & LRE_FLAG_NAMED_GROUPS) == 0)
-        return NULL;
-    re_bytecode_len = get_u32(bc_buf + RE_HEADER_BYTECODE_LEN);
-    return (const char *)(bc_buf + RE_HEADER_LEN + re_bytecode_len);
-}
+/* lre_get_alloc_count, lre_get_capture_count, lre_get_flags and
+   lre_get_groupnames are ported to Zig (libregexp.zig). */
 
 #ifdef TEST
 
