@@ -145,32 +145,17 @@ uint32_t re_string_hash(int len, const uint32_t *buf);
 int re_emit_range(REParseState *s, const CharRange *cr);
 int re_string_cmp_len(const void *a, const void *b, void *arg);
 void re_emit_char(REParseState *s, int c);
+void re_string_list_init(REParseState *s1, REStringList *s);
+void re_string_list_free(REStringList *s);
+int re_string_find2(REStringList *s, int len, const uint32_t *buf, uint32_t h0, BOOL add_flag);
+int re_string_find(REStringList *s, int len, const uint32_t *buf, BOOL add_flag);
+int re_string_add(REStringList *s, int len, const uint32_t *buf);
 
 /* ported to Zig (libregexp.zig) */
 
-static void re_string_list_init(REParseState *s1, REStringList *s)
-{
-    cr_init(&s->cr, s1->opaque, lre_realloc);
-    s->n_strings = 0;
-    s->hash_size = 0;
-    s->hash_bits = 0;
-    s->hash_table = NULL;
-}
+/* ported to Zig (libregexp.zig) */
 
-static void re_string_list_free(REStringList *s)
-{
-    REString *p, *p_next;
-    int i;
-    for(i = 0; i < s->hash_size; i++) {
-        for(p = s->hash_table[i]; p != NULL; p = p_next) {
-            p_next = p->next;
-            lre_realloc(s->cr.mem_opaque, p, 0);
-        }
-    }
-    lre_realloc(s->cr.mem_opaque, s->hash_table, 0);
-
-    cr_free(&s->cr);
-}
+/* ported to Zig (libregexp.zig) */
 
 static void lre_print_char(int c, BOOL is_range)
 {
@@ -215,80 +200,11 @@ static __maybe_unused void re_string_list_dump(const char *str, const REStringLi
     }
 }
 
-static int re_string_find2(REStringList *s, int len, const uint32_t *buf,
-                           uint32_t h0, BOOL add_flag)
-{
-    uint32_t h = 0; /* avoid warning */
-    REString *p;
-    if (s->n_strings != 0) {
-        h = h0 >> (32 - s->hash_bits);
-        for(p = s->hash_table[h]; p != NULL; p = p->next) {
-            if (p->hash == h0 && p->len == len &&
-                !memcmp(p->buf, buf, len * sizeof(buf[0]))) {
-                return 1;
-            }
-        }
-    }
-    /* not found */
-    if (!add_flag)
-        return 0;
-    /* increase the size of the hash table if needed */
-    if (unlikely((s->n_strings + 1) > s->hash_size)) {
-        REString **new_hash_table, *p_next;
-        int new_hash_bits, i;
-        uint32_t new_hash_size;
-        new_hash_bits = max_int(s->hash_bits + 1, 4);
-        new_hash_size = 1 << new_hash_bits;
-        new_hash_table = lre_realloc(s->cr.mem_opaque, NULL,
-                                     sizeof(new_hash_table[0]) * new_hash_size);
-        if (!new_hash_table)
-            return -1;
-        memset(new_hash_table, 0, sizeof(new_hash_table[0]) * new_hash_size);
-        for(i = 0; i < s->hash_size; i++) {
-            for(p = s->hash_table[i]; p != NULL; p = p_next) {
-                p_next = p->next;
-                h = p->hash >> (32 - new_hash_bits);
-                p->next = new_hash_table[h];
-                new_hash_table[h] = p;
-            }
-        }
-        lre_realloc(s->cr.mem_opaque, s->hash_table, 0);
-        s->hash_bits = new_hash_bits;
-        s->hash_size = new_hash_size;
-        s->hash_table = new_hash_table;
-        h = h0 >> (32 - s->hash_bits);
-    }
+/* ported to Zig (libregexp.zig) */
 
-    p = lre_realloc(s->cr.mem_opaque, NULL, sizeof(REString) + len * sizeof(buf[0]));
-    if (!p)
-        return -1;
-    p->next = s->hash_table[h];
-    s->hash_table[h] = p;
-    s->n_strings++;
-    p->hash = h0;
-    p->len = len;
-    memcpy(p->buf, buf, sizeof(buf[0]) * len);
-    return 1;
-}
+/* ported to Zig (libregexp.zig) */
 
-static int re_string_find(REStringList *s, int len, const uint32_t *buf,
-                          BOOL add_flag)
-{
-    uint32_t h0;
-    h0 = re_string_hash(len, buf);
-    return re_string_find2(s, len, buf, h0, add_flag);
-}
-
-/* return -1 if memory error, 0 if OK */
-static int re_string_add(REStringList *s, int len, const uint32_t *buf)
-{
-    if (len == 1) {
-        return cr_union_interval(&s->cr, buf[0], buf[0]);
-    }
-    if (re_string_find(s, len, buf, TRUE) < 0)
-        return -1;
-    return 0;
-}
+/* ported to Zig (libregexp.zig) */
 
 /* a = a op b */
 static int re_string_list_op(REStringList *a, REStringList *b, int op)

@@ -1378,3 +1378,119 @@ export fn re_emit_char(s: *REParseState, c: c_int) callconv(.c) void {
         _ = re_emit_op_u32(s, @intCast(if (s.ignore_case != 0) REOP.char32_i else REOP.char32), @intCast(c));
     }
 }
+
+// ===========================================================================
+// Parser: REStringList hash-table core (string-set membership for v-mode).
+// ===========================================================================
+
+extern fn memset(dest: ?*anyopaque, c: c_int, n: usize) ?*anyopaque;
+extern fn cr_init(cr: *CharRange, mem_opaque: ?*anyopaque, realloc_func: ?*const DynBufReallocFunc) callconv(.c) void;
+extern fn cr_free(cr: *CharRange) callconv(.c) void;
+extern fn cr_op1(cr: *CharRange, b_pt: [*c]const u32, b_len: c_int, op: c_int) callconv(.c) c_int;
+
+const CR_OP_UNION: c_int = 0;
+
+const REStringList = extern struct {
+    cr: CharRange,
+    n_strings: u32,
+    hash_size: u32,
+    hash_bits: c_int,
+    hash_table: [*c][*c]REString,
+};
+
+// REString.buf is a uint32_t[] flexible array right after the header.
+inline fn reStringBuf(p: [*c]REString) [*]u32 {
+    return @ptrFromInt(@intFromPtr(p) + @sizeOf(REString));
+}
+inline fn max_int(a: c_int, b: c_int) c_int {
+    return if (a > b) a else b;
+}
+inline fn cr_union_interval(cr: *CharRange, c1: u32, c2: u32) c_int {
+    var b_pt = [2]u32{ c1, c2 + 1 };
+    return cr_op1(cr, &b_pt, 2, CR_OP_UNION);
+}
+
+export fn re_string_list_init(s1: *REParseState, s: *REStringList) callconv(.c) void {
+    cr_init(&s.cr, s1.opaque_ptr, &lre_realloc);
+    s.n_strings = 0;
+    s.hash_size = 0;
+    s.hash_bits = 0;
+    s.hash_table = null;
+}
+
+export fn re_string_list_free(s: *REStringList) callconv(.c) void {
+    var i: u32 = 0;
+    while (i < s.hash_size) : (i += 1) {
+        var p = s.hash_table[i];
+        while (p != null) {
+            const p_next = p.*.next;
+            _ = lre_realloc(s.cr.mem_opaque, @ptrCast(p), 0);
+            p = p_next;
+        }
+    }
+    _ = lre_realloc(s.cr.mem_opaque, @ptrCast(s.hash_table), 0);
+    cr_free(&s.cr);
+}
+
+export fn re_string_find2(s: *REStringList, len: c_int, buf: [*c]const u32, h0: u32, add_flag: c_int) callconv(.c) c_int {
+    var h: u32 = 0;
+    if (s.n_strings != 0) {
+        h = h0 >> @intCast(32 - s.hash_bits);
+        var p = s.hash_table[h];
+        while (p != null) : (p = p.*.next) {
+            if (p.*.hash == h0 and p.*.len == @as(u32, @intCast(len)) and
+                memcmp(@ptrCast(reStringBuf(p)), @ptrCast(buf), @as(usize, @intCast(len)) * @sizeOf(u32)) == 0)
+            {
+                return 1;
+            }
+        }
+    }
+    if (add_flag == 0) return 0;
+    // grow the hash table if needed
+    if ((s.n_strings + 1) > s.hash_size) {
+        const new_hash_bits = max_int(s.hash_bits + 1, 4);
+        const new_hash_size: u32 = @as(u32, 1) << @intCast(new_hash_bits);
+        const raw = lre_realloc(s.cr.mem_opaque, null, @sizeOf(usize) * new_hash_size);
+        if (raw == null) return -1;
+        const new_hash_table: [*c][*c]REString = @ptrCast(@alignCast(raw));
+        _ = memset(raw, 0, @sizeOf(usize) * new_hash_size);
+        var i: u32 = 0;
+        while (i < s.hash_size) : (i += 1) {
+            var p = s.hash_table[i];
+            while (p != null) {
+                const p_next = p.*.next;
+                h = p.*.hash >> @intCast(32 - new_hash_bits);
+                p.*.next = new_hash_table[h];
+                new_hash_table[h] = p;
+                p = p_next;
+            }
+        }
+        _ = lre_realloc(s.cr.mem_opaque, @ptrCast(s.hash_table), 0);
+        s.hash_bits = new_hash_bits;
+        s.hash_size = new_hash_size;
+        s.hash_table = new_hash_table;
+        h = h0 >> @intCast(32 - s.hash_bits);
+    }
+    const raw = lre_realloc(s.cr.mem_opaque, null, @sizeOf(REString) + @as(usize, @intCast(len)) * @sizeOf(u32));
+    if (raw == null) return -1;
+    const p: [*c]REString = @ptrCast(@alignCast(raw));
+    p.*.next = s.hash_table[h];
+    s.hash_table[h] = p;
+    s.n_strings += 1;
+    p.*.hash = h0;
+    p.*.len = @intCast(len);
+    _ = memcpy(@ptrCast(reStringBuf(p)), @ptrCast(buf), @sizeOf(u32) * @as(usize, @intCast(len)));
+    return 1;
+}
+
+export fn re_string_find(s: *REStringList, len: c_int, buf: [*c]const u32, add_flag: c_int) callconv(.c) c_int {
+    const h0 = re_string_hash(len, buf);
+    return re_string_find2(s, len, buf, h0, add_flag);
+}
+
+// return -1 if memory error, 0 if OK
+export fn re_string_add(s: *REStringList, len: c_int, buf: [*c]const u32) callconv(.c) c_int {
+    if (len == 1) return cr_union_interval(&s.cr, buf[0], buf[0]);
+    if (re_string_find(s, len, buf, 1) < 0) return -1;
+    return 0;
+}
