@@ -1984,3 +1984,245 @@ export fn get_class_atom(s: *REParseState, cr: ?*REStringList, pp: [*c][*c]const
     pp[0] = p;
     return @intCast(c);
 }
+
+// ===========================================================================
+// Parser: class-set parsing (v-mode nested classes + operations).
+// ===========================================================================
+
+extern fn lre_check_stack_overflow(opaque_ptr: ?*anyopaque, alloca_size: usize) callconv(.c) c_int;
+
+inline fn cr_add_interval(cr: *CharRange, c1: u32, c2: u32) c_int {
+    if ((cr.len + 2) > cr.size) {
+        if (cr_realloc(cr, cr.len + 2) != 0) return -1;
+    }
+    cr.points[@intCast(cr.len)] = c1;
+    cr.len += 1;
+    cr.points[@intCast(cr.len)] = c2;
+    cr.len += 1;
+    return 0;
+}
+
+fn re_parse_class_set_operand(s: *REParseState, cr: *REStringList, pp: [*c][*c]const u8) c_int {
+    const p = pp[0];
+    if (p[0] == '[') {
+        if (re_parse_nested_class(s, cr, pp) != 0) return -1;
+    } else {
+        const c1s = get_class_atom(s, cr, pp, 1);
+        if (c1s < 0) return -1;
+        var c1: u32 = @intCast(c1s);
+        if (c1 < CLASS_RANGE_BASE) {
+            // create a range with a single character
+            re_string_list_init(s, cr);
+            if (s.ignore_case != 0) c1 = @intCast(lre_canonicalize(c1, s.is_unicode));
+            if (cr_union_interval(&cr.cr, c1, c1) != 0) {
+                re_string_list_free(cr);
+                return -1;
+            }
+        }
+    }
+    return 0;
+}
+
+fn re_parse_nested_class(s: *REParseState, cr: *REStringList, pp: [*c][*c]const u8) c_int {
+    var cr1_s: REStringList = undefined;
+    const cr1 = &cr1_s;
+    var ret: c_int = undefined;
+
+    if (lre_check_stack_overflow(s.opaque_ptr, 0) != 0) return re_parse_error(s, "stack overflow");
+
+    re_string_list_init(s, cr);
+    var p = pp[0];
+    p += 1; // skip '['
+
+    var invert = false;
+    if (p[0] == '^') {
+        p += 1;
+        invert = true;
+    }
+
+    var is_first = true;
+    while (true) {
+        if (p[0] == ']') break;
+        if (p[0] == '[' and s.unicode_sets != 0) {
+            if (re_parse_nested_class(s, cr1, &p) != 0) {
+                re_string_list_free(cr);
+                return -1;
+            }
+            // class_union
+            ret = re_string_list_op(cr, cr1, CR_OP_UNION);
+            re_string_list_free(cr1);
+            if (ret != 0) {
+                _ = re_parse_error(s, "out of memory");
+                re_string_list_free(cr);
+                return -1;
+            }
+        } else {
+            const c1s = get_class_atom(s, cr1, &p, 1);
+            if (c1s < 0) {
+                re_string_list_free(cr);
+                return -1;
+            }
+            var c1: u32 = @intCast(c1s);
+            var do_class_atom = false;
+            if (p[0] == '-' and p[1] != ']') {
+                var p0 = p + 1;
+                if (p[1] == '-' and s.unicode_sets != 0 and is_first) {
+                    do_class_atom = true; // first class followed by '--'
+                } else if (c1 >= CLASS_RANGE_BASE) {
+                    if (s.is_unicode != 0) {
+                        re_string_list_free(cr1);
+                        _ = re_parse_error(s, "invalid class range");
+                        re_string_list_free(cr);
+                        return -1;
+                    }
+                    do_class_atom = true; // Annex B: match '-'
+                } else {
+                    const c2s = get_class_atom(s, cr1, &p0, 1);
+                    if (c2s < 0) {
+                        re_string_list_free(cr);
+                        return -1;
+                    }
+                    const c2: u32 = @intCast(c2s);
+                    if (c2 >= CLASS_RANGE_BASE) {
+                        re_string_list_free(cr1);
+                        if (s.is_unicode != 0) {
+                            _ = re_parse_error(s, "invalid class range");
+                            re_string_list_free(cr);
+                            return -1;
+                        }
+                        do_class_atom = true; // Annex B
+                    } else {
+                        p = p0;
+                        if (c2 < c1) {
+                            _ = re_parse_error(s, "invalid class range");
+                            re_string_list_free(cr);
+                            return -1;
+                        }
+                        if (s.ignore_case != 0) {
+                            var cr2_s: CharRange = undefined;
+                            const cr2 = &cr2_s;
+                            cr_init(cr2, s.opaque_ptr, &lre_realloc);
+                            if (cr_add_interval(cr2, c1, c2 + 1) != 0 or
+                                cr_regexp_canonicalize(cr2, s.is_unicode) != 0 or
+                                cr_op1(&cr.cr, cr2.points, cr2.len, CR_OP_UNION) != 0)
+                            {
+                                cr_free(cr2);
+                                _ = re_parse_error(s, "out of memory");
+                                re_string_list_free(cr);
+                                return -1;
+                            }
+                            cr_free(cr2);
+                        } else {
+                            if (cr_union_interval(&cr.cr, c1, c2) != 0) {
+                                _ = re_parse_error(s, "out of memory");
+                                re_string_list_free(cr);
+                                return -1;
+                            }
+                        }
+                        is_first = false; // union operation
+                    }
+                }
+            } else {
+                do_class_atom = true;
+            }
+            if (do_class_atom) {
+                // class_atom
+                if (c1 >= CLASS_RANGE_BASE) {
+                    // class_union
+                    ret = re_string_list_op(cr, cr1, CR_OP_UNION);
+                    re_string_list_free(cr1);
+                    if (ret != 0) {
+                        _ = re_parse_error(s, "out of memory");
+                        re_string_list_free(cr);
+                        return -1;
+                    }
+                } else {
+                    if (s.ignore_case != 0) c1 = @intCast(lre_canonicalize(c1, s.is_unicode));
+                    if (cr_union_interval(&cr.cr, c1, c1) != 0) {
+                        _ = re_parse_error(s, "out of memory");
+                        re_string_list_free(cr);
+                        return -1;
+                    }
+                }
+            }
+        }
+        if (s.unicode_sets != 0 and is_first) {
+            if (p[0] == '&' and p[1] == '&' and p[2] != '&') {
+                while (true) {
+                    if (p[0] == ']') {
+                        break;
+                    } else if (p[0] == '&' and p[1] == '&' and p[2] != '&') {
+                        p += 2;
+                    } else {
+                        _ = re_parse_error(s, "invalid operation in regular expression");
+                        re_string_list_free(cr);
+                        return -1;
+                    }
+                    if (re_parse_class_set_operand(s, cr1, &p) != 0) {
+                        re_string_list_free(cr);
+                        return -1;
+                    }
+                    ret = re_string_list_op(cr, cr1, CR_OP_INTER);
+                    re_string_list_free(cr1);
+                    if (ret != 0) {
+                        _ = re_parse_error(s, "out of memory");
+                        re_string_list_free(cr);
+                        return -1;
+                    }
+                }
+            } else if (p[0] == '-' and p[1] == '-') {
+                while (true) {
+                    if (p[0] == ']') {
+                        break;
+                    } else if (p[0] == '-' and p[1] == '-') {
+                        p += 2;
+                    } else {
+                        _ = re_parse_error(s, "invalid operation in regular expression");
+                        re_string_list_free(cr);
+                        return -1;
+                    }
+                    if (re_parse_class_set_operand(s, cr1, &p) != 0) {
+                        re_string_list_free(cr);
+                        return -1;
+                    }
+                    ret = re_string_list_op(cr, cr1, CR_OP_SUB);
+                    re_string_list_free(cr1);
+                    if (ret != 0) {
+                        _ = re_parse_error(s, "out of memory");
+                        re_string_list_free(cr);
+                        return -1;
+                    }
+                }
+            }
+        }
+        is_first = false;
+    }
+
+    p += 1; // skip ']'
+    pp[0] = p;
+    if (invert) {
+        if (cr.n_strings != 0) {
+            _ = re_parse_error(s, "negated character class with strings in regular expression debugger eval code");
+            re_string_list_free(cr);
+            return -1;
+        }
+        if (cr_invert(&cr.cr) != 0) {
+            _ = re_parse_error(s, "out of memory");
+            re_string_list_free(cr);
+            return -1;
+        }
+    }
+    return 0;
+}
+
+export fn re_parse_char_class(s: *REParseState, pp: [*c][*c]const u8) callconv(.c) c_int {
+    var cr_s: REStringList = undefined;
+    const cr = &cr_s;
+    if (re_parse_nested_class(s, cr, pp) != 0) return -1;
+    if (re_emit_string_list(s, cr) != 0) {
+        re_string_list_free(cr);
+        return -1;
+    }
+    re_string_list_free(cr);
+    return 0;
+}
