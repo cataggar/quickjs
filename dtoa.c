@@ -81,6 +81,18 @@ typedef struct {
     limb_t tab[];
 } mpb_t;
 
+/* mpb_* helpers ported to Zig (dtoa.zig). */
+void mpb_renorm(mpb_t *r);
+uint64_t pow_ui(uint32_t a, uint32_t b);
+uint32_t pow_ui_inv(uint32_t *pr_inv, int *pshift, uint32_t a, uint32_t b);
+int mpb_get_bit(const mpb_t *r, int k);
+void mpb_shr_round(mpb_t *r, int shift, int rnd_mode);
+int mpb_cmp(const mpb_t *a, const mpb_t *b);
+void mpb_set_u64(mpb_t *r, uint64_t m);
+uint64_t mpb_get_u64(mpb_t *r);
+int mpb_floor_log2(mpb_t *a);
+int mul_log2_radix(int a, int radix);
+
 /* ported to Zig (dtoa.zig) */
 
 /* tabr[] = taba[] * b + l. Return the high carry */
@@ -118,85 +130,14 @@ static __maybe_unused void mpb_dump(const char *str, const mpb_t *a)
     printf("\n");
 }
 
-static void mpb_renorm(mpb_t *r)
-{
-    while (r->len > 1 && r->tab[r->len - 1] == 0)
-        r->len--;
-}
+/* ported to Zig (dtoa.zig) */
 
-#ifdef USE_POW5_TABLE
-static const uint32_t pow5_table[17] = {
-    0x00000005, 0x00000019, 0x0000007d, 0x00000271, 
-    0x00000c35, 0x00003d09, 0x0001312d, 0x0005f5e1, 
-    0x001dcd65, 0x009502f9, 0x02e90edd, 0x0e8d4a51, 
-    0x48c27395, 0x6bcc41e9, 0x1afd498d, 0x86f26fc1, 
-    0xa2bc2ec5, 
-};
-
-static const uint8_t pow5h_table[4] = {
-    0x00000001, 0x00000007, 0x00000023, 0x000000b1, 
-};
-
-static const uint32_t pow5_inv_table[13] = {
-    0x99999999, 0x47ae147a, 0x0624dd2f, 0xa36e2eb1,
-    0x4f8b588e, 0x0c6f7a0b, 0xad7f29ab, 0x5798ee23,
-    0x12e0be82, 0xb7cdfd9d, 0x5fd7fe17, 0x19799812,
-    0xc25c2684,
-};
-#endif
+/* pow5 tables ported to Zig (dtoa.zig) */
 
 /* return a^b */
-static uint64_t pow_ui(uint32_t a, uint32_t b)
-{
-    int i, n_bits;
-    uint64_t r;
-    if (b == 0)
-        return 1;
-    if (b == 1)
-        return a;
-#ifdef USE_POW5_TABLE
-    if ((a == 5 || a == 10) && b <= 17) {
-        r = pow5_table[b - 1];
-        if (b >= 14) {
-            r |= (uint64_t)pow5h_table[b - 14] << 32;
-        }
-        if (a == 10)
-            r <<= b;
-        return r;
-    }
-#endif
-    r = a;
-    n_bits = 32 - clz32(b);
-    for(i = n_bits - 2; i >= 0; i--) {
-        r *= r;
-        if ((b >> i) & 1)
-            r *= a;
-    }
-    return r;
-}
+/* ported to Zig (dtoa.zig) */
 
-static uint32_t pow_ui_inv(uint32_t *pr_inv, int *pshift, uint32_t a, uint32_t b)
-{
-    uint32_t r_inv, r;
-    int shift;
-#ifdef USE_POW5_TABLE
-    if (a == 5 && b >= 1 && b <= 13) {
-        r = pow5_table[b - 1];
-        shift = clz32(r);
-        r <<= shift;
-        r_inv = pow5_inv_table[b - 1];
-    } else
-#endif
-    {
-        r = pow_ui(a, b);
-        shift = clz32(r);
-        r <<= shift;
-        r_inv = udiv1norm_init(r);
-    }
-    *pshift = shift;
-    *pr_inv = r_inv;
-    return r;
-}
+/* ported to Zig (dtoa.zig) */
 
 enum {
     JS_RNDN, /* round to nearest, ties to even */
@@ -204,195 +145,25 @@ enum {
     JS_RNDZ,
 };
 
-static int mpb_get_bit(const mpb_t *r, int k)
-{
-    int l;
-    
-    l = (unsigned)k / LIMB_BITS;
-    k = k & (LIMB_BITS - 1);
-    if (l >= r->len)
-        return 0;
-    else
-        return (r->tab[l] >> k) & 1;
-}
+/* ported to Zig (dtoa.zig) */
 
 /* compute round(r / 2^shift). 'shift' can be negative */
-static void mpb_shr_round(mpb_t *r, int shift, int rnd_mode)
-{
-    int l, i;
-
-    if (shift == 0)
-        return;
-    if (shift < 0) {
-        shift = -shift;
-        l = (unsigned)shift / LIMB_BITS;
-        shift = shift & (LIMB_BITS - 1);
-        if (shift != 0) {
-            r->tab[r->len] = mp_shl(r->tab, r->tab, r->len, shift, 0);
-            r->len++;
-            mpb_renorm(r);
-        }
-        if (l > 0) {
-            for(i = r->len - 1; i >= 0; i--)
-                r->tab[i + l] = r->tab[i];
-            for(i = 0; i < l; i++)
-                r->tab[i] = 0;
-            r->len += l;
-        }
-    } else {
-        limb_t bit1, bit2;
-        int k, add_one;
-        
-        switch(rnd_mode) {
-        default:
-        case JS_RNDZ:
-            add_one = 0;
-            break;
-        case JS_RNDN:
-        case JS_RNDNA:
-            bit1 = mpb_get_bit(r, shift - 1);
-            if (bit1) {
-                if (rnd_mode == JS_RNDNA) {
-                    bit2 = 1;
-                } else {
-                    /* bit2 = oring of all the bits after bit1 */
-                    bit2 = 0;
-                    if (shift >= 2) {
-                        k = shift - 1;
-                        l = (unsigned)k / LIMB_BITS;
-                        k = k & (LIMB_BITS - 1);
-                        for(i = 0; i < min_int(l, r->len); i++)
-                            bit2 |= r->tab[i];
-                        if (l < r->len)
-                            bit2 |= r->tab[l] & (((limb_t)1 << k) - 1);
-                    }
-                }
-                if (bit2) {
-                    add_one = 1;
-                } else {
-                    /* round to even */
-                    add_one = mpb_get_bit(r, shift);
-                }
-            } else {
-                add_one = 0;
-            }
-            break;
-        }
-
-        l = (unsigned)shift / LIMB_BITS;
-        shift = shift & (LIMB_BITS - 1);
-        if (l >= r->len) {
-            r->len = 1;
-            r->tab[0] = add_one;
-        } else {
-            if (l > 0) {
-                r->len -= l;
-                for(i = 0; i < r->len; i++)
-                    r->tab[i] = r->tab[i + l];
-            }
-            if (shift != 0) {
-                mp_shr(r->tab, r->tab, r->len, shift, 0);
-                mpb_renorm(r);
-            }
-            if (add_one) {
-                limb_t a;
-                a = mp_add_ui(r->tab, 1, r->len);
-                if (a)
-                    r->tab[r->len++] = a;
-            }
-        }
-    }
-}
+/* ported to Zig (dtoa.zig) */
 
 /* return -1, 0 or 1 */
-static int mpb_cmp(const mpb_t *a, const mpb_t *b)
-{
-    mp_size_t i;
-    if (a->len < b->len)
-        return -1;
-    else if (a->len > b->len)
-        return 1;
-    for(i = a->len - 1; i >= 0; i--) {
-        if (a->tab[i] != b->tab[i]) {
-            if (a->tab[i] < b->tab[i])
-                return -1;
-            else
-                return 1;
-        }
-    }
-    return 0;
-}
+/* ported to Zig (dtoa.zig) */
 
-static void mpb_set_u64(mpb_t *r, uint64_t m)
-{
-#if LIMB_BITS == 64
-    r->tab[0] = m;
-    r->len = 1;
-#else
-    r->tab[0] = m;
-    r->tab[1] = m >> LIMB_BITS;
-    if (r->tab[1] == 0)
-        r->len = 1;
-    else
-        r->len = 2;
-#endif
-}
+/* ported to Zig (dtoa.zig) */
 
-static uint64_t mpb_get_u64(mpb_t *r)
-{
-#if LIMB_BITS == 64
-    return r->tab[0];
-#else
-    if (r->len == 1) {
-        return r->tab[0];
-    } else {
-        return r->tab[0] | ((uint64_t)r->tab[1] << LIMB_BITS);
-    }
-#endif
-}
+/* ported to Zig (dtoa.zig) */
 
 /* floor_log2() = position of the first non zero bit or -1 if zero. */
-static int mpb_floor_log2(mpb_t *a)
-{
-    limb_t v;
-    v = a->tab[a->len - 1];
-    if (v == 0)
-        return -1;
-    else
-        return a->len * LIMB_BITS - 1 - clz32(v);
-}
+/* ported to Zig (dtoa.zig) */
 
-#define MUL_LOG2_RADIX_BASE_LOG2 24
-
-/* round((1 << MUL_LOG2_RADIX_BASE_LOG2)/log2(i + 2)) */
-static const uint32_t mul_log2_radix_table[JS_RADIX_MAX - 1] = {
-    0x000000, 0xa1849d, 0x000000, 0x6e40d2, 
-    0x6308c9, 0x5b3065, 0x000000, 0x50c24e, 
-    0x4d104d, 0x4a0027, 0x4768ce, 0x452e54, 
-    0x433d00, 0x418677, 0x000000, 0x3ea16b, 
-    0x3d645a, 0x3c43c2, 0x3b3b9a, 0x3a4899, 
-    0x39680b, 0x3897b3, 0x37d5af, 0x372069, 
-    0x367686, 0x35d6df, 0x354072, 0x34b261, 
-    0x342bea, 0x33ac62, 0x000000, 0x32bfd9, 
-    0x3251dd, 0x31e8d6, 0x318465,
-};
+/* mul_log2_radix_table ported to Zig (dtoa.zig) */
 
 /* return floor(a / log2(radix)) for -2048 <= a <= 2047 */
-static int mul_log2_radix(int a, int radix)
-{
-    int radix_bits, mult;
-
-    if ((radix & (radix - 1)) == 0) {
-        /* if the radix is a power of two better to do it exactly */
-        radix_bits = 31 - clz32(radix);
-        if (a < 0)
-            a -= radix_bits - 1;
-        return a / radix_bits;
-    } else {
-        mult = mul_log2_radix_table[radix - 2];
-        return ((int64_t)a * mult) >> MUL_LOG2_RADIX_BASE_LOG2;
-    }
-}
+/* ported to Zig (dtoa.zig) */
 
 #if 0
 static void build_mul_log2_radix_table(void)
