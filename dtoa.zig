@@ -138,7 +138,7 @@ const dlimb_t = u64;
 const mp_size_t = isize;
 const LIMB_BITS: u6 = 32;
 
-export fn mp_add_ui(tab: [*c]limb_t, b: limb_t, n: usize) callconv(.c) limb_t {
+fn mp_add_ui(tab: [*c]limb_t, b: limb_t, n: usize) callconv(.c) limb_t {
     var k: limb_t = b;
     var i: usize = 0;
     while (i < n) : (i += 1) {
@@ -151,7 +151,7 @@ export fn mp_add_ui(tab: [*c]limb_t, b: limb_t, n: usize) callconv(.c) limb_t {
 }
 
 // tabr[] = taba[] * b + l. Return the high carry.
-export fn mp_mul1(tabr: [*c]limb_t, taba: [*c]const limb_t, n: limb_t, b: limb_t, l_in: limb_t) callconv(.c) limb_t {
+fn mp_mul1(tabr: [*c]limb_t, taba: [*c]const limb_t, n: limb_t, b: limb_t, l_in: limb_t) callconv(.c) limb_t {
     var l: limb_t = l_in;
     var i: limb_t = 0;
     while (i < n) : (i += 1) {
@@ -163,7 +163,7 @@ export fn mp_mul1(tabr: [*c]limb_t, taba: [*c]const limb_t, n: limb_t, b: limb_t
 }
 
 // WARNING: d must be >= 2^(LIMB_BITS-1)
-export fn udiv1norm_init(d: limb_t) callconv(.c) limb_t {
+fn udiv1norm_init(d: limb_t) callconv(.c) limb_t {
     const a1: limb_t = (0 -% d) -% 1;
     const a0: limb_t = 0xFFFFFFFF;
     return @truncate(((@as(dlimb_t, a1) << LIMB_BITS) | a0) / d);
@@ -184,7 +184,7 @@ fn udiv1norm(pr: *limb_t, a1: limb_t, a0: limb_t, d: limb_t, d_inv: limb_t) limb
     return q;
 }
 
-export fn mp_div1(tabr: [*c]limb_t, taba: [*c]const limb_t, n: limb_t, b: limb_t, r_in: limb_t) callconv(.c) limb_t {
+fn mp_div1(tabr: [*c]limb_t, taba: [*c]const limb_t, n: limb_t, b: limb_t, r_in: limb_t) callconv(.c) limb_t {
     var r: limb_t = r_in;
     var i: slimb_t = @as(slimb_t, @intCast(n)) - 1;
     while (i >= 0) : (i -= 1) {
@@ -196,7 +196,7 @@ export fn mp_div1(tabr: [*c]limb_t, taba: [*c]const limb_t, n: limb_t, b: limb_t
 }
 
 // r = (a + high*B^n) >> shift. Return remainder r. 1 <= shift <= LIMB_BITS-1.
-export fn mp_shr(tab_r: [*c]limb_t, tab: [*c]const limb_t, n: mp_size_t, shift: c_int, high: limb_t) callconv(.c) limb_t {
+fn mp_shr(tab_r: [*c]limb_t, tab: [*c]const limb_t, n: mp_size_t, shift: c_int, high: limb_t) callconv(.c) limb_t {
     var l: limb_t = high;
     const sh: u5 = @intCast(shift);
     const sh2: u5 = @intCast(LIMB_BITS - shift);
@@ -210,7 +210,7 @@ export fn mp_shr(tab_r: [*c]limb_t, tab: [*c]const limb_t, n: mp_size_t, shift: 
 }
 
 // r = (a << shift) + low. 1 <= shift <= LIMB_BITS-1, 0 <= low < 2^shift.
-export fn mp_shl(tab_r: [*c]limb_t, tab: [*c]const limb_t, n: mp_size_t, shift: c_int, low: limb_t) callconv(.c) limb_t {
+fn mp_shl(tab_r: [*c]limb_t, tab: [*c]const limb_t, n: mp_size_t, shift: c_int, low: limb_t) callconv(.c) limb_t {
     var l: limb_t = low;
     const sh: u5 = @intCast(shift);
     const sh2: u5 = @intCast(LIMB_BITS - shift);
@@ -223,7 +223,7 @@ export fn mp_shl(tab_r: [*c]limb_t, tab: [*c]const limb_t, n: mp_size_t, shift: 
     return l;
 }
 
-export fn mp_div1norm(tabr: [*c]limb_t, taba: [*c]const limb_t, n: limb_t, b: limb_t, r_in: limb_t, b_inv: limb_t, shift: c_int) callconv(.c) limb_t {
+fn mp_div1norm(tabr: [*c]limb_t, taba: [*c]const limb_t, n: limb_t, b: limb_t, r_in: limb_t, b_inv: limb_t, shift: c_int) callconv(.c) limb_t {
     var r: limb_t = r_in;
     if (shift != 0) {
         r = (r << @as(u5, @intCast(shift))) | mp_shl(tabr, taba, @intCast(n), shift, 0);
@@ -283,12 +283,12 @@ const mul_log2_radix_table = [35]u32{
     0x3251dd, 0x31e8d6, 0x318465,
 };
 
-export fn mpb_renorm(r: *mpb_t) callconv(.c) void {
+fn mpb_renorm(r: *mpb_t) callconv(.c) void {
     const t = mpbTab(r);
     while (r.len > 1 and t[@intCast(r.len - 1)] == 0) r.len -= 1;
 }
 
-export fn pow_ui(a: u32, b: u32) callconv(.c) u64 {
+fn pow_ui(a: u32, b: u32) callconv(.c) u64 {
     if (b == 0) return 1;
     if (b == 1) return a;
     if ((a == 5 or a == 10) and b <= 17) {
@@ -307,7 +307,7 @@ export fn pow_ui(a: u32, b: u32) callconv(.c) u64 {
     return r;
 }
 
-export fn pow_ui_inv(pr_inv: *u32, pshift: *c_int, a: u32, b: u32) callconv(.c) u32 {
+fn pow_ui_inv(pr_inv: *u32, pshift: *c_int, a: u32, b: u32) callconv(.c) u32 {
     var r: u32 = undefined;
     var r_inv: u32 = undefined;
     var shift: c_int = undefined;
@@ -327,7 +327,7 @@ export fn pow_ui_inv(pr_inv: *u32, pshift: *c_int, a: u32, b: u32) callconv(.c) 
     return r;
 }
 
-export fn mpb_get_bit(r: *const mpb_t, k_in: c_int) callconv(.c) c_int {
+fn mpb_get_bit(r: *const mpb_t, k_in: c_int) callconv(.c) c_int {
     const ku: u32 = @bitCast(k_in);
     const l: u32 = ku / 32;
     const kbit: u5 = @intCast(ku & 31);
@@ -336,7 +336,7 @@ export fn mpb_get_bit(r: *const mpb_t, k_in: c_int) callconv(.c) c_int {
 }
 
 // compute round(r / 2^shift). 'shift' can be negative.
-export fn mpb_shr_round(r: *mpb_t, shift_in: c_int, rnd_mode: c_int) callconv(.c) void {
+fn mpb_shr_round(r: *mpb_t, shift_in: c_int, rnd_mode: c_int) callconv(.c) void {
     var shift = shift_in;
     const t = mpbTab(r);
     if (shift == 0) return;
@@ -412,7 +412,7 @@ export fn mpb_shr_round(r: *mpb_t, shift_in: c_int, rnd_mode: c_int) callconv(.c
     }
 }
 
-export fn mpb_cmp(a: *const mpb_t, b: *const mpb_t) callconv(.c) c_int {
+fn mpb_cmp(a: *const mpb_t, b: *const mpb_t) callconv(.c) c_int {
     if (a.len < b.len) return -1;
     if (a.len > b.len) return 1;
     const ta = mpbTabC(a);
@@ -426,21 +426,21 @@ export fn mpb_cmp(a: *const mpb_t, b: *const mpb_t) callconv(.c) c_int {
     return 0;
 }
 
-export fn mpb_set_u64(r: *mpb_t, m: u64) callconv(.c) void {
+fn mpb_set_u64(r: *mpb_t, m: u64) callconv(.c) void {
     const t = mpbTab(r);
     t[0] = @truncate(m);
     t[1] = @truncate(m >> 32);
     r.len = if (t[1] == 0) 1 else 2;
 }
 
-export fn mpb_get_u64(r: *mpb_t) callconv(.c) u64 {
+fn mpb_get_u64(r: *mpb_t) callconv(.c) u64 {
     const t = mpbTab(r);
     if (r.len == 1) return t[0];
     return @as(u64, t[0]) | (@as(u64, t[1]) << 32);
 }
 
 // floor_log2() = position of the first non zero bit or -1 if zero.
-export fn mpb_floor_log2(a: *mpb_t) callconv(.c) c_int {
+fn mpb_floor_log2(a: *mpb_t) callconv(.c) c_int {
     const t = mpbTab(a);
     const v = t[@intCast(a.len - 1)];
     if (v == 0) return -1;
@@ -448,7 +448,7 @@ export fn mpb_floor_log2(a: *mpb_t) callconv(.c) c_int {
 }
 
 // return floor(a / log2(radix)) for -2048 <= a <= 2047
-export fn mul_log2_radix(a: c_int, radix: c_int) callconv(.c) c_int {
+fn mul_log2_radix(a: c_int, radix: c_int) callconv(.c) c_int {
     if ((radix & (radix - 1)) == 0) {
         const radix_bits: c_int = 31 - @as(c_int, @clz(@as(u32, @intCast(radix))));
         var aa = a;
