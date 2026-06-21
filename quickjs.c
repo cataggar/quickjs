@@ -47,6 +47,12 @@
 #include "libunicode.h"
 #include "dtoa.h"
 
+/* Ported to Zig (quickjs.zig). */
+double js_pow(double a, double b);
+BOOL is_safe_integer(double d);
+int get_prop_flags(int flags, int def_flags);
+BOOL check_define_prop_flags(int prop_flags, int flags);
+
 #define OPTIMIZE         1
 #define SHORT_OPCODES    1
 #if defined(__EMSCRIPTEN__)
@@ -10116,12 +10122,7 @@ int JS_SetPropertyStr(JSContext *ctx, JSValueConst this_obj,
    it, otherwise def_flags is used)
    Note: makes assumption about the bit pattern of the flags
 */
-static int get_prop_flags(int flags, int def_flags)
-{
-    int mask;
-    mask = (flags >> JS_PROP_HAS_SHIFT) & JS_PROP_C_W_E;
-    return (flags & mask) | (def_flags & ~mask);
-}
+/* ported to Zig (quickjs.zig) */
 
 static int JS_CreateProperty(JSContext *ctx, JSObject *p,
                              JSAtom prop, JSValueConst val,
@@ -10269,34 +10270,7 @@ static int JS_CreateProperty(JSContext *ctx, JSObject *p,
 }
 
 /* return FALSE if not OK */
-static BOOL check_define_prop_flags(int prop_flags, int flags)
-{
-    BOOL has_accessor, is_getset;
-
-    if (!(prop_flags & JS_PROP_CONFIGURABLE)) {
-        if ((flags & (JS_PROP_HAS_CONFIGURABLE | JS_PROP_CONFIGURABLE)) ==
-            (JS_PROP_HAS_CONFIGURABLE | JS_PROP_CONFIGURABLE)) {
-            return FALSE;
-        }
-        if ((flags & JS_PROP_HAS_ENUMERABLE) &&
-            (flags & JS_PROP_ENUMERABLE) != (prop_flags & JS_PROP_ENUMERABLE))
-            return FALSE;
-        if (flags & (JS_PROP_HAS_VALUE | JS_PROP_HAS_WRITABLE |
-                     JS_PROP_HAS_GET | JS_PROP_HAS_SET)) {
-            has_accessor = ((flags & (JS_PROP_HAS_GET | JS_PROP_HAS_SET)) != 0);
-            is_getset = ((prop_flags & JS_PROP_TMASK) == JS_PROP_GETSET);
-            if (has_accessor != is_getset)
-                return FALSE;
-            if (!is_getset && !(prop_flags & JS_PROP_WRITABLE)) {
-                /* not writable: cannot set the writable bit */
-                if ((flags & (JS_PROP_HAS_WRITABLE | JS_PROP_WRITABLE)) ==
-                    (JS_PROP_HAS_WRITABLE | JS_PROP_WRITABLE))
-                    return FALSE;
-            }
-        }
-    }
-    return TRUE;
-}
+/* ported to Zig (quickjs.zig) */
 
 /* ensure that the shape can be safely modified */
 static int js_shape_prepare_update(JSContext *ctx, JSObject *p,
@@ -13484,11 +13458,7 @@ static __exception int JS_ToArrayLengthFree(JSContext *ctx, uint32_t *plen,
 
 #define MAX_SAFE_INTEGER (((int64_t)1 << 53) - 1)
 
-static BOOL is_safe_integer(double d)
-{
-    return isfinite(d) && floor(d) == d &&
-        fabs(d) <= (double)MAX_SAFE_INTEGER;
-}
+/* ported to Zig (quickjs.zig) */
 
 int JS_ToIndex(JSContext *ctx, uint64_t *plen, JSValueConst val)
 {
@@ -14565,15 +14535,7 @@ int JS_IsArray(JSContext *ctx, JSValueConst val)
     }
 }
 
-static double js_pow(double a, double b)
-{
-    if (unlikely(!isfinite(b)) && fabs(a) == 1) {
-        /* not compatible with IEEE 754 */
-        return JS_FLOAT64_NAN;
-    } else {
-        return pow(a, b);
-    }
-}
+/* ported to Zig (quickjs.zig) */
 
 JSValue JS_NewBigInt64(JSContext *ctx, int64_t v)
 {

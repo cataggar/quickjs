@@ -9,4 +9,5 @@ comptime {
     _ = @import("libunicode.zig");
     _ = @import("libregexp.zig");
     _ = @import("dtoa.zig");
+    _ = @import("quickjs.zig");
 }
