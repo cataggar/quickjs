@@ -455,3 +455,65 @@ export fn shape_hash(h: u32, val: u32) callconv(.c) u32 {
 export fn get_shape_hash(h: u32, hash_bits: c_int) callconv(.c) u32 {
     return h >> @as(u5, @intCast(32 - hash_bits));
 }
+
+// ===========================================================================
+// Parser/bytecode pure scanning + flag helpers.
+// ===========================================================================
+
+extern fn unicode_from_utf8(p: [*c]const u8, max_len: c_int, pp: [*c][*c]const u8) callconv(.c) c_int;
+
+const UTF8_CHAR_LEN_MAX: c_int = 6; // cutils.h:330
+const CP_LS: c_int = 0x2028; // quickjs.c:21500
+const CP_PS: c_int = 0x2029; // quickjs.c:21501
+
+export fn skip_shebang(pp: [*c][*c]const u8, buf_end: [*c]const u8) callconv(.c) void {
+    var p = pp[0];
+    if (p[0] == '#' and p[1] == '!') {
+        p += 2;
+        while (@intFromPtr(p) < @intFromPtr(buf_end)) {
+            if (p[0] == '\n' or p[0] == '\r') {
+                break;
+            } else if (p[0] >= 0x80) {
+                const c = unicode_from_utf8(p, UTF8_CHAR_LEN_MAX, &p);
+                if (c == CP_LS or c == CP_PS) {
+                    break;
+                } else if (c == -1) {
+                    p += 1; // skip invalid UTF-8
+                }
+            } else {
+                p += 1;
+            }
+        }
+        pp[0] = p;
+    }
+}
+
+// return the zero based line number; column number via *pcol_num.
+export fn get_line_col(pcol_num: *c_int, buf: [*c]const u8, len: usize) callconv(.c) c_int {
+    var line_num: c_int = 0;
+    var col_num: c_int = 0;
+    var i: usize = 0;
+    while (i < len) : (i += 1) {
+        const c = buf[i];
+        if (c == '\n') {
+            line_num += 1;
+            col_num = 0;
+        } else if (c < 0x80 or c >= 0xc0) {
+            col_num += 1;
+        }
+    }
+    pcol_num.* = col_num;
+    return line_num;
+}
+
+export fn bc_set_flags(pflags: *u32, pidx: *c_int, val: u32, n: c_int) callconv(.c) void {
+    pflags.* = pflags.* | (val << @as(u5, @intCast(pidx.*)));
+    pidx.* += n;
+}
+
+// XXX: this does not work for n == 32
+export fn bc_get_flags(flags: u32, pidx: *c_int, n: c_int) callconv(.c) u32 {
+    const val = (flags >> @as(u5, @intCast(pidx.*))) & ((@as(u32, 1) << @as(u5, @intCast(n))) - 1);
+    pidx.* += n;
+    return val;
+}

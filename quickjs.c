@@ -65,6 +65,10 @@ BOOL is_valid_raw_json_char(int c);
 BOOL has_lf_in_range(const uint8_t *p1, const uint8_t *p2);
 uint32_t shape_hash(uint32_t h, uint32_t val);
 uint32_t get_shape_hash(uint32_t h, int hash_bits);
+void skip_shebang(const uint8_t **pp, const uint8_t *buf_end);
+int get_line_col(int *pcol_num, const uint8_t *buf, size_t len);
+void bc_set_flags(uint32_t *pflags, int *pidx, uint32_t val, int n);
+uint32_t bc_get_flags(uint32_t flags, int *pidx, int n);
 BOOL check_define_prop_flags(int prop_flags, int flags);
 
 #define OPTIMIZE         1
@@ -21888,25 +21892,7 @@ static void __attribute((unused)) dump_token(JSParseState *s,
 
 /* return the zero based line and column number in the source. */
 /* Note: we no longer support '\r' as line terminator */
-static int get_line_col(int *pcol_num, const uint8_t *buf, size_t len)
-{
-    int line_num, col_num, c;
-    size_t i;
-    
-    line_num = 0;
-    col_num = 0;
-    for(i = 0; i < len; i++) {
-        c = buf[i];
-        if (c == '\n') {
-            line_num++;
-            col_num = 0;
-        } else if (c < 0x80 || c >= 0xc0) {
-            col_num++;
-        }
-    }
-    *pcol_num = col_num;
-    return line_num;
-}
+/* ported to Zig (quickjs.zig) */
 
 static int get_line_col_cached(GetLineColCache *s, int *pcol_num, const uint8_t *ptr)
 {
@@ -23369,30 +23355,7 @@ static int peek_token(JSParseState *s, BOOL no_line_terminator)
     return simple_next_token(&p, no_line_terminator);
 }
 
-static void skip_shebang(const uint8_t **pp, const uint8_t *buf_end)
-{
-    const uint8_t *p = *pp;
-    int c;
-
-    if (p[0] == '#' && p[1] == '!') {
-        p += 2;
-        while (p < buf_end) {
-            if (*p == '\n' || *p == '\r') {
-                break;
-            } else if (*p >= 0x80) {
-                c = unicode_from_utf8(p, UTF8_CHAR_LEN_MAX, &p);
-                if (c == CP_LS || c == CP_PS) {
-                    break;
-                } else if (c == -1) {
-                    p++; /* skip invalid UTF-8 */
-                }
-            } else {
-                p++;
-            }
-        }
-        *pp = p;
-    }
-}
+/* ported to Zig (quickjs.zig) */
 
 /* return true if 'input' contains the source of a module
    (heuristic). 'input' must be a zero terminated.
@@ -37195,11 +37158,7 @@ static void bc_put_sleb128(BCWriterState *s, int32_t v)
     dbuf_put_sleb128(&s->dbuf, v);
 }
 
-static void bc_set_flags(uint32_t *pflags, int *pidx, uint32_t val, int n)
-{
-    *pflags = *pflags | (val << *pidx);
-    *pidx += n;
-}
+/* ported to Zig (quickjs.zig) */
 
 static int bc_atom_to_idx(BCWriterState *s, uint32_t *pres, JSAtom atom)
 {
@@ -38205,14 +38164,7 @@ static JSString *JS_ReadString(BCReaderState *s)
     return p;
 }
 
-static uint32_t bc_get_flags(uint32_t flags, int *pidx, int n)
-{
-    uint32_t val;
-    /* XXX: this does not work for n == 32 */
-    val = (flags >> *pidx) & ((1U << n) - 1);
-    *pidx += n;
-    return val;
-}
+/* ported to Zig (quickjs.zig) */
 
 static int JS_ReadFunctionBytecode(BCReaderState *s, JSFunctionBytecode *b,
                                    int byte_code_offset, uint32_t bc_len)
