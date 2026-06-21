@@ -517,3 +517,66 @@ export fn bc_get_flags(flags: u32, pidx: *c_int, n: c_int) callconv(.c) u32 {
     pidx.* += n;
     return val;
 }
+
+// ===========================================================================
+// Parser/optimizer opcode & token predicates. The OP_*/TOK_* enum values are
+// exported from C (zig_* symbols) so the C compiler computes them — no drift.
+// ===========================================================================
+
+extern const zig_OP_scope_get_var_undef: c_int;
+extern const zig_OP_with_get_var: c_int;
+extern const zig_OP_scope_get_var: c_int;
+extern const zig_OP_put_ref_value: c_int;
+extern const zig_OP_insert3: c_int;
+extern const zig_OP_perm4: c_int;
+extern const zig_OP_nop: c_int;
+extern const zig_OP_rot3l: c_int;
+
+extern const zig_TOK_IDENT: c_int;
+extern const zig_TOK_FIRST_KEYWORD: c_int;
+extern const zig_TOK_LAST_KEYWORD: c_int;
+extern const zig_TOK_NUMBER: c_int;
+extern const zig_TOK_STRING: c_int;
+extern const zig_TOK_REGEXP: c_int;
+extern const zig_TOK_DEC: c_int;
+extern const zig_TOK_INC: c_int;
+extern const zig_TOK_NULL: c_int;
+extern const zig_TOK_FALSE: c_int;
+extern const zig_TOK_TRUE: c_int;
+extern const zig_TOK_THIS: c_int;
+
+export fn get_with_scope_opcode(op: c_int) callconv(.c) c_int {
+    if (op == zig_OP_scope_get_var_undef)
+        return zig_OP_with_get_var;
+    return zig_OP_with_get_var + (op - zig_OP_scope_get_var);
+}
+
+export fn can_opt_put_ref_value(bc_buf: [*c]const u8, pos: c_int) callconv(.c) c_int {
+    const opcode: c_int = bc_buf[idx(pos)];
+    return @intFromBool(@as(c_int, bc_buf[idx(pos + 1)]) == zig_OP_put_ref_value and
+        (opcode == zig_OP_insert3 or opcode == zig_OP_perm4 or
+            opcode == zig_OP_nop or opcode == zig_OP_rot3l));
+}
+
+export fn can_opt_put_global_ref_value(bc_buf: [*c]const u8, pos: c_int) callconv(.c) c_int {
+    const opcode: c_int = bc_buf[idx(pos)];
+    return @intFromBool(@as(c_int, bc_buf[idx(pos + 1)]) == zig_OP_put_ref_value and
+        (opcode == zig_OP_insert3 or opcode == zig_OP_perm4 or
+            opcode == zig_OP_nop or opcode == zig_OP_rot3l));
+}
+
+// Accept keywords and reserved words as property names.
+export fn token_is_ident(tok: c_int) callconv(.c) c_int {
+    return @intFromBool(tok == zig_TOK_IDENT or
+        (tok >= zig_TOK_FIRST_KEYWORD and tok <= zig_TOK_LAST_KEYWORD));
+}
+
+// return TRUE if a regexp literal is allowed after this token
+export fn is_regexp_allowed(tok: c_int) callconv(.c) c_int {
+    if (tok == zig_TOK_NUMBER or tok == zig_TOK_STRING or tok == zig_TOK_REGEXP or
+        tok == zig_TOK_DEC or tok == zig_TOK_INC or tok == zig_TOK_NULL or
+        tok == zig_TOK_FALSE or tok == zig_TOK_TRUE or tok == zig_TOK_THIS or
+        tok == ')' or tok == ']' or tok == '}' or tok == zig_TOK_IDENT)
+        return 0; // FALSE
+    return 1; // TRUE
+}

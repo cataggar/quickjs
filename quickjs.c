@@ -69,6 +69,11 @@ void skip_shebang(const uint8_t **pp, const uint8_t *buf_end);
 int get_line_col(int *pcol_num, const uint8_t *buf, size_t len);
 void bc_set_flags(uint32_t *pflags, int *pidx, uint32_t val, int n);
 uint32_t bc_get_flags(uint32_t flags, int *pidx, int n);
+int get_with_scope_opcode(int op);
+BOOL can_opt_put_ref_value(const uint8_t *bc_buf, int pos);
+BOOL can_opt_put_global_ref_value(const uint8_t *bc_buf, int pos);
+BOOL token_is_ident(int tok);
+BOOL is_regexp_allowed(int tok);
 BOOL check_define_prop_flags(int prop_flags, int flags);
 
 #define OPTIMIZE         1
@@ -24183,13 +24188,21 @@ static __exception int js_parse_template(JSParseState *s, int call, int *argc)
 
 #define PROP_TYPE_PRIVATE (1 << 4)
 
-static BOOL token_is_ident(int tok)
-{
-    /* Accept keywords and reserved words as property names */
-    return (tok == TOK_IDENT ||
-            (tok >= TOK_FIRST_KEYWORD &&
-             tok <= TOK_LAST_KEYWORD));
-}
+/* Token enum values exported for quickjs.zig (no drift). */
+const int zig_TOK_IDENT = TOK_IDENT;
+const int zig_TOK_FIRST_KEYWORD = TOK_FIRST_KEYWORD;
+const int zig_TOK_LAST_KEYWORD = TOK_LAST_KEYWORD;
+const int zig_TOK_NUMBER = TOK_NUMBER;
+const int zig_TOK_STRING = TOK_STRING;
+const int zig_TOK_REGEXP = TOK_REGEXP;
+const int zig_TOK_DEC = TOK_DEC;
+const int zig_TOK_INC = TOK_INC;
+const int zig_TOK_NULL = TOK_NULL;
+const int zig_TOK_FALSE = TOK_FALSE;
+const int zig_TOK_TRUE = TOK_TRUE;
+const int zig_TOK_THIS = TOK_THIS;
+
+/* ported to Zig (quickjs.zig) */
 
 /* if the property is an expression, name = JS_ATOM_NULL */
 static int __exception js_parse_property_name(JSParseState *s,
@@ -24331,27 +24344,7 @@ static __exception int js_parse_seek_token(JSParseState *s, const JSParsePos *sp
 }
 
 /* return TRUE if a regexp literal is allowed after this token */
-static BOOL is_regexp_allowed(int tok)
-{
-    switch (tok) {
-    case TOK_NUMBER:
-    case TOK_STRING:
-    case TOK_REGEXP:
-    case TOK_DEC:
-    case TOK_INC:
-    case TOK_NULL:
-    case TOK_FALSE:
-    case TOK_TRUE:
-    case TOK_THIS:
-    case ')':
-    case ']':
-    case '}': /* XXX: regexp may occur after */
-    case TOK_IDENT:
-        return FALSE;
-    default:
-        return TRUE;
-    }
-}
+/* ported to Zig (quickjs.zig) */
 
 #define SKIP_HAS_SEMI       (1 << 0)
 #define SKIP_HAS_ELLIPSIS   (1 << 1)
@@ -32324,33 +32317,21 @@ static int get_closure_var(JSContext *ctx, JSFunctionDef *s,
                            is_const, is_lexical, var_kind);
 }
 
-static int get_with_scope_opcode(int op)
-{
-    if (op == OP_scope_get_var_undef)
-        return OP_with_get_var;
-    else
-        return OP_with_get_var + (op - OP_scope_get_var);
-}
+/* ported to Zig (quickjs.zig) */
 
-static BOOL can_opt_put_ref_value(const uint8_t *bc_buf, int pos)
-{
-    int opcode = bc_buf[pos];
-    return (bc_buf[pos + 1] == OP_put_ref_value &&
-            (opcode == OP_insert3 ||
-             opcode == OP_perm4 ||
-             opcode == OP_nop ||
-             opcode == OP_rot3l));
-}
+/* ported to Zig (quickjs.zig) */
 
-static BOOL can_opt_put_global_ref_value(const uint8_t *bc_buf, int pos)
-{
-    int opcode = bc_buf[pos];
-    return (bc_buf[pos + 1] == OP_put_ref_value &&
-            (opcode == OP_insert3 ||
-             opcode == OP_perm4 ||
-             opcode == OP_nop ||
-             opcode == OP_rot3l));
-}
+/* ported to Zig (quickjs.zig) */
+
+/* Opcode enum values exported for quickjs.zig (no drift). */
+const int zig_OP_scope_get_var_undef = OP_scope_get_var_undef;
+const int zig_OP_with_get_var = OP_with_get_var;
+const int zig_OP_scope_get_var = OP_scope_get_var;
+const int zig_OP_put_ref_value = OP_put_ref_value;
+const int zig_OP_insert3 = OP_insert3;
+const int zig_OP_perm4 = OP_perm4;
+const int zig_OP_nop = OP_nop;
+const int zig_OP_rot3l = OP_rot3l;
 
 static int optimize_scope_make_ref(JSContext *ctx, JSFunctionDef *s,
                                    DynBuf *bc, uint8_t *bc_buf,
