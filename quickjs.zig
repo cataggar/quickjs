@@ -52,6 +52,36 @@ export fn get_prop_flags(flags: c_int, def_flags: c_int) callconv(.c) c_int {
     return (flags & mask) | (def_flags & ~mask);
 }
 
+// JS_MALLOC_BLOCK_SIZE_COUNT (quickjs.c:251)
+const JS_MALLOC_BLOCK_SIZE_COUNT: c_int = 31;
+
+export fn get_block_size_index(size: usize) callconv(.c) c_int {
+    if (size <= 16) {
+        return 0;
+    } else if (size <= 128) {
+        return @intCast((size + 7) / 8 - 2);
+    } else if (size <= 256) {
+        return @intCast((size + 15) / 16 + 6);
+    } else if (size <= 512) {
+        return @intCast((size + 31) / 32 + 14);
+    } else {
+        return JS_MALLOC_BLOCK_SIZE_COUNT;
+    }
+}
+
+export fn count_ascii(buf: [*c]const u8, len: usize) callconv(.c) usize {
+    var p: usize = 0;
+    while (p < len and buf[p] < 128) p += 1;
+    return p;
+}
+
+// round to nearest, ties to even, shifting right by n.
+export fn shr_rndn(a: u64, n: c_int) callconv(.c) u64 {
+    const sh: u6 = @intCast(n);
+    const addend: u64 = ((a >> sh) & 1) + ((@as(u64, 1) << @as(u6, @intCast(n - 1))) - 1);
+    return (a +% addend) >> sh;
+}
+
 export fn check_define_prop_flags(prop_flags: c_int, flags: c_int) callconv(.c) c_int {
     if ((prop_flags & JS_PROP_CONFIGURABLE) == 0) {
         if ((flags & (JS_PROP_HAS_CONFIGURABLE | JS_PROP_CONFIGURABLE)) ==

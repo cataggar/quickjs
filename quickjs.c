@@ -51,6 +51,9 @@
 double js_pow(double a, double b);
 BOOL is_safe_integer(double d);
 int get_prop_flags(int flags, int def_flags);
+int get_block_size_index(size_t size);
+size_t count_ascii(const uint8_t *buf, size_t len);
+uint64_t shr_rndn(uint64_t a, int n);
 BOOL check_define_prop_flags(int prop_flags, int flags);
 
 #define OPTIMIZE         1
@@ -1456,20 +1459,7 @@ static const uint16_t js_malloc_block_sizes[JS_MALLOC_BLOCK_SIZE_COUNT] = {
     512,
 };
 
-static int get_block_size_index(size_t size)
-{
-    if (size <= 16) {
-        return 0;
-    } else if (size <= 128) {
-        return (size + 7) / 8 - 2;
-    } else if (size <= 256) {
-        return (size + 15) / 16 + 6;
-    } else if (size <= 512) {
-        return (size + 31) / 32 + 14;
-    } else {
-        return JS_MALLOC_BLOCK_SIZE_COUNT;
-    }
-}
+/* ported to Zig (quickjs.zig) */
 
 static JSMallocBlockHeader *get_zero_size_block(JSMallocContext *s)
 {
@@ -3452,15 +3442,7 @@ static JSAtom JS_NewAtomStr(JSContext *ctx, JSString *p)
 }
 
 /* XXX: optimize */
-static size_t count_ascii(const uint8_t *buf, size_t len)
-{
-    const uint8_t *p, *p_end;
-    p = buf;
-    p_end = buf + len;
-    while (p < p_end && *p < 128)
-        p++;
-    return p - buf;
-}
+/* ported to Zig (quickjs.zig) */
 
 /* str is UTF-8 encoded */
 JSAtom JS_NewAtomLen(JSContext *ctx, const char *str, size_t len)
@@ -12221,11 +12203,7 @@ static uint64_t js_bigint_get_mant_exp(JSContext *ctx,
 }
 
 /* shift left with round to nearest, ties to even. n >= 1 */
-static uint64_t shr_rndn(uint64_t a, int n)
-{
-    uint64_t addend = ((a >> n) & 1) + ((1 << (n - 1)) - 1);
-    return (a + addend) >> n;
-}
+/* ported to Zig (quickjs.zig) */
 
 /* convert to float64 with round to nearest, ties to even. Return
    +/-infinity if too large. */
