@@ -66,137 +66,44 @@ typedef uint64_t dlimb_t;
 
 typedef intptr_t mp_size_t;
 
+/* The mp_* primitives are ported to Zig (dtoa.zig). */
+limb_t mp_add_ui(limb_t *tab, limb_t b, size_t n);
+limb_t mp_mul1(limb_t *tabr, const limb_t *taba, limb_t n, limb_t b, limb_t l);
+limb_t udiv1norm_init(limb_t d);
+limb_t mp_div1(limb_t *tabr, const limb_t *taba, limb_t n, limb_t b, limb_t r);
+limb_t mp_shr(limb_t *tab_r, const limb_t *tab, mp_size_t n, int shift, limb_t high);
+limb_t mp_shl(limb_t *tab_r, const limb_t *tab, mp_size_t n, int shift, limb_t low);
+limb_t mp_div1norm(limb_t *tabr, const limb_t *taba, limb_t n, limb_t b, limb_t r, limb_t b_inv, int shift);
+
 /* the represented number is sum(i, tab[i]*2^(LIMB_BITS * i)) */
 typedef struct {
     int len; /* >= 1 */
     limb_t tab[];
 } mpb_t;
 
-static limb_t mp_add_ui(limb_t *tab, limb_t b, size_t n)
-{
-    size_t i;
-    limb_t k, a;
-
-    k=b;
-    for(i=0;i<n;i++) {
-        if (k == 0)
-            break;
-        a = tab[i] + k;
-        k = (a < k);
-        tab[i] = a;
-    }
-    return k;
-}
+/* ported to Zig (dtoa.zig) */
 
 /* tabr[] = taba[] * b + l. Return the high carry */
-static limb_t mp_mul1(limb_t *tabr, const limb_t *taba, limb_t n, 
-                      limb_t b, limb_t l)
-{
-    limb_t i;
-    dlimb_t t;
-
-    for(i = 0; i < n; i++) {
-        t = (dlimb_t)taba[i] * (dlimb_t)b + l;
-        tabr[i] = t;
-        l = t >> LIMB_BITS;
-    }
-    return l;
-}
+/* ported to Zig (dtoa.zig) */
 
 /* WARNING: d must be >= 2^(LIMB_BITS-1) */
-static inline limb_t udiv1norm_init(limb_t d)
-{
-    limb_t a0, a1;
-    a1 = -d - 1;
-    a0 = -1;
-    return (((dlimb_t)a1 << LIMB_BITS) | a0) / d;
-}
+/* ported to Zig (dtoa.zig) */
 
 /* return the quotient and the remainder in '*pr'of 'a1*2^LIMB_BITS+a0
    / d' with 0 <= a1 < d. */
-static inline limb_t udiv1norm(limb_t *pr, limb_t a1, limb_t a0,
-                                limb_t d, limb_t d_inv)
-{
-    limb_t n1m, n_adj, q, r, ah;
-    dlimb_t a;
-    n1m = ((slimb_t)a0 >> (LIMB_BITS - 1));
-    n_adj = a0 + (n1m & d);
-    a = (dlimb_t)d_inv * (a1 - n1m) + n_adj;
-    q = (a >> LIMB_BITS) + a1;
-    /* compute a - q * r and update q so that the remainder is between
-       0 and d - 1 */
-    a = ((dlimb_t)a1 << LIMB_BITS) | a0;
-    a = a - (dlimb_t)q * d - d;
-    ah = a >> LIMB_BITS;
-    q += 1 + ah;
-    r = (limb_t)a + (ah & d);
-    *pr = r;
-    return q;
-}
+/* ported to Zig (dtoa.zig) */
 
-static limb_t mp_div1(limb_t *tabr, const limb_t *taba, limb_t n,
-                      limb_t b, limb_t r)
-{
-    slimb_t i;
-    dlimb_t a1;
-    for(i = n - 1; i >= 0; i--) {
-        a1 = ((dlimb_t)r << LIMB_BITS) | taba[i];
-        tabr[i] = a1 / b;
-        r = a1 % b;
-    }
-    return r;
-}
+/* ported to Zig (dtoa.zig) */
 
 /* r = (a + high*B^n) >> shift. Return the remainder r (0 <= r < 2^shift). 
    1 <= shift <= LIMB_BITS - 1 */
-static limb_t mp_shr(limb_t *tab_r, const limb_t *tab, mp_size_t n, 
-                     int shift, limb_t high)
-{
-    mp_size_t i;
-    limb_t l, a;
-
-    assert(shift >= 1 && shift < LIMB_BITS);
-    l = high;
-    for(i = n - 1; i >= 0; i--) {
-        a = tab[i];
-        tab_r[i] = (a >> shift) | (l << (LIMB_BITS - shift));
-        l = a;
-    }
-    return l & (((limb_t)1 << shift) - 1);
-}
+/* ported to Zig (dtoa.zig) */
 
 /* r = (a << shift) + low. 1 <= shift <= LIMB_BITS - 1, 0 <= low <
    2^shift. */
-static limb_t mp_shl(limb_t *tab_r, const limb_t *tab, mp_size_t n, 
-              int shift, limb_t low)
-{
-    mp_size_t i;
-    limb_t l, a;
+/* ported to Zig (dtoa.zig) */
 
-    assert(shift >= 1 && shift < LIMB_BITS);
-    l = low;
-    for(i = 0; i < n; i++) {
-        a = tab[i];
-        tab_r[i] = (a << shift) | l;
-        l = (a >> (LIMB_BITS - shift)); 
-    }
-    return l;
-}
-
-static no_inline limb_t mp_div1norm(limb_t *tabr, const limb_t *taba, limb_t n,
-                                    limb_t b, limb_t r, limb_t b_inv, int shift)
-{
-    slimb_t i;
-
-    if (shift != 0) {
-        r = (r << shift) | mp_shl(tabr, taba, n, shift, 0);
-    }
-    for(i = n - 1; i >= 0; i--) {
-        tabr[i] = udiv1norm(&r, r, taba[i], b, b_inv);
-    }
-    r >>= shift;
-    return r;
-}
+/* ported to Zig (dtoa.zig) */
 
 static __maybe_unused void mpb_dump(const char *str, const mpb_t *a)
 {

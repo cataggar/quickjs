@@ -127,3 +127,111 @@ export fn i64toa_radix(buf: [*c]u8, n: i64, radix: c_uint) callconv(.c) usize {
     buf[0] = '-';
     return u64toa_radix(buf + 1, 0 -% @as(u64, @bitCast(n)), radix) + 1;
 }
+
+// ===========================================================================
+// dtoa: low-level multi-precision primitives (limb arrays).
+// ===========================================================================
+
+const limb_t = u32;
+const slimb_t = i32;
+const dlimb_t = u64;
+const mp_size_t = isize;
+const LIMB_BITS: u6 = 32;
+
+export fn mp_add_ui(tab: [*c]limb_t, b: limb_t, n: usize) callconv(.c) limb_t {
+    var k: limb_t = b;
+    var i: usize = 0;
+    while (i < n) : (i += 1) {
+        if (k == 0) break;
+        const a = tab[i] +% k;
+        k = @intFromBool(a < k);
+        tab[i] = a;
+    }
+    return k;
+}
+
+// tabr[] = taba[] * b + l. Return the high carry.
+export fn mp_mul1(tabr: [*c]limb_t, taba: [*c]const limb_t, n: limb_t, b: limb_t, l_in: limb_t) callconv(.c) limb_t {
+    var l: limb_t = l_in;
+    var i: limb_t = 0;
+    while (i < n) : (i += 1) {
+        const t: dlimb_t = @as(dlimb_t, taba[i]) * @as(dlimb_t, b) + l;
+        tabr[i] = @truncate(t);
+        l = @truncate(t >> LIMB_BITS);
+    }
+    return l;
+}
+
+// WARNING: d must be >= 2^(LIMB_BITS-1)
+export fn udiv1norm_init(d: limb_t) callconv(.c) limb_t {
+    const a1: limb_t = (0 -% d) -% 1;
+    const a0: limb_t = 0xFFFFFFFF;
+    return @truncate(((@as(dlimb_t, a1) << LIMB_BITS) | a0) / d);
+}
+
+// quotient + remainder in *pr of 'a1*2^LIMB_BITS+a0 / d' with 0 <= a1 < d.
+fn udiv1norm(pr: *limb_t, a1: limb_t, a0: limb_t, d: limb_t, d_inv: limb_t) limb_t {
+    const n1m: limb_t = @bitCast(@as(slimb_t, @bitCast(a0)) >> (LIMB_BITS - 1));
+    const n_adj: limb_t = a0 +% (n1m & d);
+    var a: dlimb_t = @as(dlimb_t, d_inv) * @as(dlimb_t, a1 -% n1m) + n_adj;
+    var q: limb_t = @truncate((a >> LIMB_BITS) +% @as(dlimb_t, a1));
+    a = (@as(dlimb_t, a1) << LIMB_BITS) | a0;
+    a = a -% @as(dlimb_t, q) *% @as(dlimb_t, d) -% @as(dlimb_t, d);
+    const ah: limb_t = @truncate(a >> LIMB_BITS);
+    q +%= 1 +% ah;
+    const r: limb_t = @as(limb_t, @truncate(a)) +% (ah & d);
+    pr.* = r;
+    return q;
+}
+
+export fn mp_div1(tabr: [*c]limb_t, taba: [*c]const limb_t, n: limb_t, b: limb_t, r_in: limb_t) callconv(.c) limb_t {
+    var r: limb_t = r_in;
+    var i: slimb_t = @as(slimb_t, @intCast(n)) - 1;
+    while (i >= 0) : (i -= 1) {
+        const a1: dlimb_t = (@as(dlimb_t, r) << LIMB_BITS) | taba[@intCast(i)];
+        tabr[@intCast(i)] = @truncate(a1 / b);
+        r = @truncate(a1 % b);
+    }
+    return r;
+}
+
+// r = (a + high*B^n) >> shift. Return remainder r. 1 <= shift <= LIMB_BITS-1.
+export fn mp_shr(tab_r: [*c]limb_t, tab: [*c]const limb_t, n: mp_size_t, shift: c_int, high: limb_t) callconv(.c) limb_t {
+    var l: limb_t = high;
+    const sh: u5 = @intCast(shift);
+    const sh2: u5 = @intCast(LIMB_BITS - shift);
+    var i: mp_size_t = n - 1;
+    while (i >= 0) : (i -= 1) {
+        const a = tab[@intCast(i)];
+        tab_r[@intCast(i)] = (a >> sh) | (l << sh2);
+        l = a;
+    }
+    return l & ((@as(limb_t, 1) << sh) - 1);
+}
+
+// r = (a << shift) + low. 1 <= shift <= LIMB_BITS-1, 0 <= low < 2^shift.
+export fn mp_shl(tab_r: [*c]limb_t, tab: [*c]const limb_t, n: mp_size_t, shift: c_int, low: limb_t) callconv(.c) limb_t {
+    var l: limb_t = low;
+    const sh: u5 = @intCast(shift);
+    const sh2: u5 = @intCast(LIMB_BITS - shift);
+    var i: mp_size_t = 0;
+    while (i < n) : (i += 1) {
+        const a = tab[@intCast(i)];
+        tab_r[@intCast(i)] = (a << sh) | l;
+        l = a >> sh2;
+    }
+    return l;
+}
+
+export fn mp_div1norm(tabr: [*c]limb_t, taba: [*c]const limb_t, n: limb_t, b: limb_t, r_in: limb_t, b_inv: limb_t, shift: c_int) callconv(.c) limb_t {
+    var r: limb_t = r_in;
+    if (shift != 0) {
+        r = (r << @as(u5, @intCast(shift))) | mp_shl(tabr, taba, @intCast(n), shift, 0);
+    }
+    var i: slimb_t = @as(slimb_t, @intCast(n)) - 1;
+    while (i >= 0) : (i -= 1) {
+        tabr[@intCast(i)] = udiv1norm(&r, r, taba[@intCast(i)], b, b_inv);
+    }
+    r >>= @as(u5, @intCast(shift));
+    return r;
+}
