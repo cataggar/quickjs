@@ -587,116 +587,18 @@ static void limb_to_a(char *buf, limb_t n, unsigned int radix, int len)
     }
 }
 
-size_t u32toa(char *buf, uint32_t n)
-{
-    char buf1[10], *q;
-    size_t len;
-    
-    q = buf1 + sizeof(buf1);
-    do {
-        *--q = n % 10 + '0';
-        n /= 10;
-    } while (n != 0);
-    len = buf1 + sizeof(buf1) - q;
-    memcpy(buf, q, len);
-    return len;
-}
+/* ported to Zig (dtoa.zig) */
 
-size_t i32toa(char *buf, int32_t n)
-{
-    if (n >= 0) {
-        return u32toa(buf, n);
-    } else {
-        buf[0] = '-';
-        return u32toa(buf + 1, -(uint32_t)n) + 1;
-    }
-}
+/* ported to Zig (dtoa.zig) */
 
 #ifdef USE_FAST_INT
-size_t u64toa(char *buf, uint64_t n)
-{
-    if (n < 0x100000000) {
-        return u32toa(buf, n);
-    } else {
-        uint64_t n1;
-        char *q = buf;
-        uint32_t n2;
-        
-        n1 = n / 1000000000;
-        n %= 1000000000;
-        if (n1 >= 0x100000000) {
-            n2 = n1 / 1000000000;
-            n1 = n1 % 1000000000;
-            /* at most two digits */
-            if (n2 >= 10) {
-                *q++ = n2 / 10 + '0';
-                n2 %= 10;
-            }
-            *q++ = n2 + '0';
-            u32toa_len(q, n1, 9);
-            q += 9;
-        } else {
-            q += u32toa(q, n1);
-        }
-        u32toa_len(q, n, 9);
-        q += 9;
-        return q - buf;
-    }
-}
+/* ported to Zig (dtoa.zig) */
 
-size_t i64toa(char *buf, int64_t n)
-{
-    if (n >= 0) {
-        return u64toa(buf, n);
-    } else {
-        buf[0] = '-';
-        return u64toa(buf + 1, -(uint64_t)n) + 1;
-    }
-}
+/* ported to Zig (dtoa.zig) */
 
-/* XXX: only tested for 1 <= n < 2^53 */
-size_t u64toa_radix(char *buf, uint64_t n, unsigned int radix)
-{
-    int radix_bits, l;
-    if (likely(radix == 10))
-        return u64toa(buf, n);
-    if ((radix & (radix - 1)) == 0) {
-        radix_bits = 31 - clz32(radix);
-        if (n == 0)
-            l = 1;
-        else
-            l = (64 - clz64(n) + radix_bits - 1) / radix_bits;
-        u64toa_bin_len(buf, n, radix_bits, l);
-        return l;
-    } else {
-        char buf1[41], *q; /* maximum length for radix = 3 */
-        size_t len;
-        int digit;
-        q = buf1 + sizeof(buf1);
-        do {
-            digit = n % radix;
-            n /= radix;
-            if (digit < 10)
-                digit += '0';
-            else
-                digit += 'a' - 10;
-            *--q = digit;
-        } while (n != 0);
-        len = buf1 + sizeof(buf1) - q;
-        memcpy(buf, q, len);
-        return len;
-    }
-}
+/* ported to Zig (dtoa.zig) */
 
-size_t i64toa_radix(char *buf, int64_t n, unsigned int radix)
-{
-    if (n >= 0) {
-        return u64toa_radix(buf, n, radix);
-    } else {
-        buf[0] = '-';
-        return u64toa_radix(buf + 1, -(uint64_t)n, radix) + 1;
-    }
-}
+/* ported to Zig (dtoa.zig) */
 #endif /* USE_FAST_INT */
 
 static const uint8_t digits_per_limb_table[JS_RADIX_MAX - 1] = {

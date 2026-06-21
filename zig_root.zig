@@ -8,4 +8,5 @@ comptime {
     _ = @import("cutils.zig");
     _ = @import("libunicode.zig");
     _ = @import("libregexp.zig");
+    _ = @import("dtoa.zig");
 }
