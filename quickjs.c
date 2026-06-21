@@ -54,6 +54,17 @@ int get_prop_flags(int flags, int def_flags);
 int get_block_size_index(size_t size);
 size_t count_ascii(const uint8_t *buf, size_t len);
 uint64_t shr_rndn(uint64_t a, int n);
+double js_fmin(double a, double b);
+double js_fmax(double a, double b);
+double js_math_sign(double a);
+double js_math_round(double a);
+double js_math_fround(double a);
+int64_t math_mod(int64_t a, int64_t b);
+int64_t floor_div(int64_t a, int64_t b);
+BOOL is_valid_raw_json_char(int c);
+BOOL has_lf_in_range(const uint8_t *p1, const uint8_t *p2);
+uint32_t shape_hash(uint32_t h, uint32_t val);
+uint32_t get_shape_hash(uint32_t h, int hash_bits);
 BOOL check_define_prop_flags(int prop_flags, int flags);
 
 #define OPTIMIZE         1
@@ -5130,16 +5141,10 @@ static int init_shape_hash(JSRuntime *rt)
 }
 
 /* same magic hash multiplier as the Linux kernel */
-static uint32_t shape_hash(uint32_t h, uint32_t val)
-{
-    return (h + val) * 0x9e370001;
-}
+/* ported to Zig (quickjs.zig) */
 
 /* truncate the shape hash to 'hash_bits' bits */
-static uint32_t get_shape_hash(uint32_t h, int hash_bits)
-{
-    return h >> (32 - hash_bits);
-}
+/* ported to Zig (quickjs.zig) */
 
 static uint32_t shape_initial_hash(JSObject *proto)
 {
@@ -24389,16 +24394,7 @@ static BOOL is_regexp_allowed(int tok)
 #define SKIP_HAS_ELLIPSIS   (1 << 1)
 #define SKIP_HAS_ASSIGNMENT (1 << 2)
 
-static BOOL has_lf_in_range(const uint8_t *p1, const uint8_t *p2)
-{
-    const uint8_t *tmp;
-    if (p1 > p2) {
-        tmp = p1;
-        p1 = p2;
-        p2 = tmp;
-    }
-    return (memchr(p1, '\n', p2 - p1) != NULL);
-}
+/* ported to Zig (quickjs.zig) */
 
 /* XXX: improve speed with early bailout */
 /* XXX: no longer works if regexps are present. Could use previous
@@ -46418,32 +46414,10 @@ int JS_AddIntrinsicStringNormalize(JSContext *ctx)
 /* Math */
 
 /* precondition: a and b are not NaN */
-static double js_fmin(double a, double b)
-{
-    if (a == 0 && b == 0) {
-        JSFloat64Union a1, b1;
-        a1.d = a;
-        b1.d = b;
-        a1.u64 |= b1.u64;
-        return a1.d;
-    } else {
-        return fmin(a, b);
-    }
-}
+/* ported to Zig (quickjs.zig) */
 
 /* precondition: a and b are not NaN */
-static double js_fmax(double a, double b)
-{
-    if (a == 0 && b == 0) {
-        JSFloat64Union a1, b1;
-        a1.d = a;
-        b1.d = b;
-        a1.u64 &= b1.u64;
-        return a1.d;
-    } else {
-        return fmax(a, b);
-    }
-}
+/* ported to Zig (quickjs.zig) */
 
 static JSValue js_math_min_max(JSContext *ctx, JSValueConst this_val,
                                int argc, JSValueConst *argv, int magic)
@@ -46498,43 +46472,9 @@ static JSValue js_math_min_max(JSContext *ctx, JSValueConst this_val,
     }
 }
 
-static double js_math_sign(double a)
-{
-    if (isnan(a) || a == 0.0)
-        return a;
-    if (a < 0)
-        return -1;
-    else
-        return 1;
-}
+/* ported to Zig (quickjs.zig) */
 
-static double js_math_round(double a)
-{
-    JSFloat64Union u;
-    uint64_t frac_mask, one;
-    unsigned int e, s;
-
-    u.d = a;
-    e = (u.u64 >> 52) & 0x7ff;
-    if (e < 1023) {
-        /* abs(a) < 1 */
-        if (e == (1023 - 1) && u.u64 != 0xbfe0000000000000) {
-            /* abs(a) > 0.5 or a = 0.5: return +/-1.0 */
-            u.u64 = (u.u64 & ((uint64_t)1 << 63)) | ((uint64_t)1023 << 52);
-        } else {
-            /* return +/-0.0 */
-            u.u64 &= (uint64_t)1 << 63;
-        }
-    } else if (e < (1023 + 52)) {
-        s = u.u64 >> 63;
-        one = (uint64_t)1 << (52 - (e - 1023));
-        frac_mask = one - 1;
-        u.u64 += (one >> 1) - s;
-        u.u64 &= ~frac_mask; /* truncate to an integer */
-    }
-    /* otherwise: abs(a) >= 2^52, or NaN, +/-Infinity: no change */
-    return u.d;
-}
+/* ported to Zig (quickjs.zig) */
 
 static JSValue js_math_hypot(JSContext *ctx, JSValueConst this_val,
                              int argc, JSValueConst *argv)
@@ -46565,10 +46505,7 @@ static double js_math_f16round(double a)
     return fromfp16(tofp16(a));
 }
 
-static double js_math_fround(double a)
-{
-    return (float)a;
-}
+/* ported to Zig (quickjs.zig) */
 
 static JSValue js_math_imul(JSContext *ctx, JSValueConst this_val,
                             int argc, JSValueConst *argv)
@@ -49372,13 +49309,7 @@ static JSValue js_json_isRawJSON(JSContext *ctx, JSValueConst this_val,
     }
 }
 
-static BOOL is_valid_raw_json_char(int c)
-{
-    return ((c >= 'a' && c <= 'z') ||
-            (c >= '0' && c <= '9') ||
-            c == '-' || 
-            c == '"');
-}
+/* ported to Zig (quickjs.zig) */
 
 static JSValue js_json_rawJSON(JSContext *ctx, JSValueConst this_val,
                                  int argc, JSValueConst *argv)
@@ -54508,17 +54439,9 @@ static const JSCFunctionListEntry js_global_funcs[] = {
 
 /* Date */
 
-static int64_t math_mod(int64_t a, int64_t b) {
-    /* return positive modulo */
-    int64_t m = a % b;
-    return m + (m < 0) * b;
-}
+/* ported to Zig (quickjs.zig) */
 
-static int64_t floor_div(int64_t a, int64_t b) {
-    /* integer division rounding toward -Infinity */
-    int64_t m = a % b;
-    return (a - (m + (m < 0) * b)) / b;
-}
+/* ported to Zig (quickjs.zig) */
 
 static JSValue js_Date_parse(JSContext *ctx, JSValueConst this_val,
                              int argc, JSValueConst *argv);

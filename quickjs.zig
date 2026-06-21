@@ -360,3 +360,98 @@ export fn mp_shr(tab_r: [*c]js_limb_t, tab: [*c]const js_limb_t, n: c_int, shift
     }
     return l & ((@as(js_limb_t, 1) << sh) - 1);
 }
+
+// ===========================================================================
+// Assorted pure leaf helpers (math, date integer math, hashing, scanning).
+// ===========================================================================
+
+extern "c" fn fmin(a: f64, b: f64) f64;
+extern "c" fn fmax(a: f64, b: f64) f64;
+extern "c" fn memchr(s: ?*const anyopaque, c: c_int, n: usize) ?*const anyopaque;
+
+// precondition: a and b are not NaN
+export fn js_fmin(a: f64, b: f64) callconv(.c) f64 {
+    if (a == 0 and b == 0) {
+        return @bitCast(@as(u64, @bitCast(a)) | @as(u64, @bitCast(b)));
+    } else {
+        return fmin(a, b);
+    }
+}
+
+export fn js_fmax(a: f64, b: f64) callconv(.c) f64 {
+    if (a == 0 and b == 0) {
+        return @bitCast(@as(u64, @bitCast(a)) & @as(u64, @bitCast(b)));
+    } else {
+        return fmax(a, b);
+    }
+}
+
+export fn js_math_sign(a: f64) callconv(.c) f64 {
+    if (std.math.isNan(a) or a == 0.0) return a;
+    if (a < 0) return -1;
+    return 1;
+}
+
+export fn js_math_round(a: f64) callconv(.c) f64 {
+    var u: u64 = @bitCast(a);
+    const e: u32 = @intCast((u >> 52) & 0x7ff);
+    if (e < 1023) {
+        if (e == (1023 - 1) and u != 0xbfe0000000000000) {
+            u = (u & (@as(u64, 1) << 63)) | (@as(u64, 1023) << 52);
+        } else {
+            u &= @as(u64, 1) << 63;
+        }
+    } else if (e < (1023 + 52)) {
+        const s: u64 = u >> 63;
+        const one: u64 = @as(u64, 1) << @as(u6, @intCast(52 - (e - 1023)));
+        const frac_mask = one - 1;
+        u +%= (one >> 1) -% s;
+        u &= ~frac_mask;
+    }
+    return @bitCast(u);
+}
+
+export fn js_math_fround(a: f64) callconv(.c) f64 {
+    return @as(f64, @as(f32, @floatCast(a)));
+}
+
+// return positive modulo
+export fn math_mod(a: i64, b: i64) callconv(.c) i64 {
+    const m = @rem(a, b);
+    return m + @as(i64, @intFromBool(m < 0)) * b;
+}
+
+// integer division rounding toward -Infinity
+export fn floor_div(a: i64, b: i64) callconv(.c) i64 {
+    const m = @rem(a, b);
+    return @divTrunc(a - (m + @as(i64, @intFromBool(m < 0)) * b), b);
+}
+
+export fn is_valid_raw_json_char(c: c_int) callconv(.c) c_int {
+    return @intFromBool((c >= 'a' and c <= 'z') or
+        (c >= '0' and c <= '9') or
+        c == '-' or
+        c == '"');
+}
+
+export fn has_lf_in_range(p1_in: [*c]const u8, p2_in: [*c]const u8) callconv(.c) c_int {
+    var p1 = p1_in;
+    var p2 = p2_in;
+    if (@intFromPtr(p1) > @intFromPtr(p2)) {
+        const tmp = p1;
+        p1 = p2;
+        p2 = tmp;
+    }
+    const len = @intFromPtr(p2) - @intFromPtr(p1);
+    return @intFromBool(memchr(p1, '\n', len) != null);
+}
+
+// same magic hash multiplier as the Linux kernel
+export fn shape_hash(h: u32, val: u32) callconv(.c) u32 {
+    return (h +% val) *% 0x9e370001;
+}
+
+// truncate the shape hash to 'hash_bits' bits
+export fn get_shape_hash(h: u32, hash_bits: c_int) callconv(.c) u32 {
+    return h >> @as(u5, @intCast(32 - hash_bits));
+}
