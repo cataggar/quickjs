@@ -669,3 +669,130 @@ export fn js_bigint_mul(ctx: ?*anyopaque, a: *const JSBigInt, b: *const JSBigInt
         _ = mp_sub(rt + idx(b.len), rt + idx(b.len), at, @intCast(a.len), 0);
     return js_bigint_normalize(ctx, r);
 }
+
+extern fn js_bigint_new_si(ctx: ?*anyopaque, a: js_slimb_t) callconv(.c) ?*JSBigInt;
+extern "c" fn abort() noreturn;
+
+extern const zig_OP_or: c_int;
+extern const zig_OP_and: c_int;
+extern const zig_OP_xor: c_int;
+
+export fn js_bigint_neg(ctx: ?*anyopaque, a: *const JSBigInt) callconv(.c) ?*JSBigInt {
+    var buf: [2]js_limb_t align(@alignOf(js_limb_t)) = undefined;
+    const b: *JSBigInt = @ptrCast(&buf);
+    b.len = 1;
+    biTab(b)[0] = 0;
+    return js_bigint_add(ctx, b, a, 1);
+}
+
+export fn js_bigint_cmp(ctx: ?*anyopaque, a: *const JSBigInt, b: *const JSBigInt) callconv(.c) c_int {
+    _ = ctx;
+    const a_sign: c_int = @intCast(biSign(a));
+    const b_sign: c_int = @intCast(biSign(b));
+    var res: c_int = 0;
+    if (a_sign != b_sign) {
+        res = 1 - 2 * a_sign;
+    } else if (a.len != b.len) {
+        // we assume the numbers are normalized
+        if (a.len < b.len) {
+            res = 2 * a_sign - 1;
+        } else {
+            res = 1 - 2 * a_sign;
+        }
+    } else {
+        const at = biTabC(a);
+        const bt = biTabC(b);
+        var i: isize = @as(isize, @intCast(a.len)) - 1;
+        while (i >= 0) : (i -= 1) {
+            if (at[idx(i)] != bt[idx(i)]) {
+                res = if (at[idx(i)] < bt[idx(i)]) -1 else 1;
+                break;
+            }
+        }
+    }
+    return res;
+}
+
+export fn js_bigint_not(ctx: ?*anyopaque, a: *const JSBigInt) callconv(.c) ?*JSBigInt {
+    const r = js_bigint_new(ctx, @intCast(a.len)) orelse return null;
+    const rt = biTab(r);
+    const at = biTabC(a);
+    var i: usize = 0;
+    while (i < a.len) : (i += 1) rt[i] = ~at[i];
+    return r; // no normalization is needed
+}
+
+// and, or, xor
+export fn js_bigint_logic(ctx: ?*anyopaque, a_in: *const JSBigInt, b_in: *const JSBigInt, op: c_int) callconv(.c) ?*JSBigInt {
+    var a = a_in;
+    var b = b_in;
+    if (a.len < b.len) {
+        const tmp = a;
+        a = b;
+        b = tmp;
+    }
+    const a_len = a.len;
+    const b_len = b.len;
+    const b_sign: js_limb_t = 0 -% biSign(b);
+    const r = js_bigint_new(ctx, @intCast(a_len)) orelse return null;
+    const rt = biTab(r);
+    const at = biTabC(a);
+    const bt = biTabC(b);
+    var i: usize = 0;
+    if (op == zig_OP_or) {
+        while (i < b_len) : (i += 1) rt[i] = at[i] | bt[i];
+        while (i < a_len) : (i += 1) rt[i] = at[i] | b_sign;
+    } else if (op == zig_OP_and) {
+        while (i < b_len) : (i += 1) rt[i] = at[i] & bt[i];
+        while (i < a_len) : (i += 1) rt[i] = at[i] & b_sign;
+    } else if (op == zig_OP_xor) {
+        while (i < b_len) : (i += 1) rt[i] = at[i] ^ bt[i];
+        while (i < a_len) : (i += 1) rt[i] = at[i] ^ b_sign;
+    } else {
+        abort();
+    }
+    return js_bigint_normalize(ctx, r);
+}
+
+export fn js_bigint_shl(ctx: ?*anyopaque, a: *const JSBigInt, shift1: c_uint) callconv(.c) ?*JSBigInt {
+    const at = biTabC(a);
+    if (a.len == 1 and at[0] == 0)
+        return js_bigint_new_si(ctx, 0); // zero case
+    const d: c_int = @intCast(shift1 / JS_LIMB_BITS);
+    const shift: c_int = @intCast(shift1 % JS_LIMB_BITS);
+    var r = js_bigint_new(ctx, @as(c_int, @intCast(a.len)) + d) orelse return null;
+    var rt = biTab(r);
+    var i: c_int = 0;
+    while (i < d) : (i += 1) rt[idx(i)] = 0;
+    if (shift == 0) {
+        i = 0;
+        while (i < a.len) : (i += 1) rt[idx(i + d)] = at[idx(i)];
+    } else {
+        var l = mp_shl(rt + idx(d), at, @intCast(a.len), shift);
+        if (biSign(a) != 0)
+            l |= (~@as(js_limb_t, 0)) << @as(LBs, @intCast(shift));
+        r = js_bigint_extend(ctx, r, l) orelse return null;
+    }
+    return r;
+}
+
+export fn js_bigint_shr(ctx: ?*anyopaque, a: *const JSBigInt, shift1: c_uint) callconv(.c) ?*JSBigInt {
+    const d: c_int = @intCast(shift1 / JS_LIMB_BITS);
+    const shift: c_int = @intCast(shift1 % JS_LIMB_BITS);
+    const a_sign: c_int = @intCast(biSign(a));
+    if (d >= a.len)
+        return js_bigint_new_si(ctx, -a_sign);
+    const n1: c_int = @as(c_int, @intCast(a.len)) - d;
+    var r = js_bigint_new(ctx, n1) orelse return null;
+    const rt = biTab(r);
+    const at = biTabC(a);
+    if (shift == 0) {
+        var i: c_int = 0;
+        while (i < n1) : (i += 1) rt[idx(i)] = at[idx(i + d)];
+        // no normalization is needed
+    } else {
+        _ = mp_shr(rt, at + idx(d), n1, shift, 0 -% @as(js_limb_t, @intCast(a_sign)));
+        r = js_bigint_normalize(ctx, r) orelse return null;
+    }
+    return r;
+}

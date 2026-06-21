@@ -533,6 +533,14 @@ typedef struct {
     /* must come just after */
     js_limb_t tab[(64 + JS_LIMB_BITS - 1) / JS_LIMB_BITS];
 } JSBigIntBuf;
+
+/* ported to Zig (quickjs.zig) */
+JSBigInt *js_bigint_neg(JSContext *ctx, const JSBigInt *a);
+int js_bigint_cmp(JSContext *ctx, const JSBigInt *a, const JSBigInt *b);
+JSBigInt *js_bigint_not(JSContext *ctx, const JSBigInt *a);
+JSBigInt *js_bigint_logic(JSContext *ctx, const JSBigInt *a, const JSBigInt *b, OPCodeEnum op);
+JSBigInt *js_bigint_shl(JSContext *ctx, const JSBigInt *a, unsigned int shift1);
+JSBigInt *js_bigint_shr(JSContext *ctx, const JSBigInt *a, unsigned int shift1);
     
 typedef enum {
     JS_AUTOINIT_ID_PROTOTYPE,
@@ -11413,7 +11421,7 @@ static __maybe_unused void js_bigint_dump(JSContext *ctx, const char *str,
     js_bigint_dump1(ctx, str, p->tab, p->len);
 }
 
-static JSBigInt *js_bigint_new_si(JSContext *ctx, js_slimb_t a)
+JSBigInt *js_bigint_new_si(JSContext *ctx, js_slimb_t a)
 {
     JSBigInt *r;
     r = js_bigint_new(ctx, 1);
@@ -11568,13 +11576,7 @@ JSBigInt *js_bigint_extend(JSContext *ctx, JSBigInt *r,
 /* ported to Zig (quickjs.zig) */
 
 /* XXX: optimize */
-static JSBigInt *js_bigint_neg(JSContext *ctx, const JSBigInt *a)
-{
-    JSBigIntBuf buf;
-    JSBigInt *b;
-    b = js_bigint_set_si(&buf, 0);
-    return js_bigint_add(ctx, b, a, 1);
-}
+/* ported to Zig (quickjs.zig) */
 
 /* ported to Zig (quickjs.zig) */
 
@@ -11682,128 +11684,13 @@ static JSBigInt *js_bigint_divrem(JSContext *ctx, const JSBigInt *a,
 }
 
 /* and, or, xor */
-static JSBigInt *js_bigint_logic(JSContext *ctx, const JSBigInt *a,
-                                 const JSBigInt *b, OPCodeEnum op)
-{
-    JSBigInt *r;
-    js_limb_t b_sign;
-    int a_len, b_len, i;
+/* ported to Zig (quickjs.zig) */
 
-    if (a->len < b->len) {
-        const JSBigInt *tmp;
-        tmp = a;
-        a = b;
-        b = tmp;
-    }
-    /* a_len >= b_len */
-    a_len = a->len;
-    b_len = b->len;
-    b_sign = -js_bigint_sign(b);
+/* ported to Zig (quickjs.zig) */
 
-    r = js_bigint_new(ctx, a_len);
-    if (!r)
-        return NULL;
-    switch(op) {
-    case OP_or:
-        for(i = 0; i < b_len; i++) {
-            r->tab[i] = a->tab[i] | b->tab[i];
-        }
-        for(i = b_len; i < a_len; i++) {
-            r->tab[i] = a->tab[i] | b_sign;
-        }
-        break;
-    case OP_and:
-        for(i = 0; i < b_len; i++) {
-            r->tab[i] = a->tab[i] & b->tab[i];
-        }
-        for(i = b_len; i < a_len; i++) {
-            r->tab[i] = a->tab[i] & b_sign;
-        }
-        break;
-    case OP_xor:
-        for(i = 0; i < b_len; i++) {
-            r->tab[i] = a->tab[i] ^ b->tab[i];
-        }
-        for(i = b_len; i < a_len; i++) {
-            r->tab[i] = a->tab[i] ^ b_sign;
-        }
-        break;
-    default:
-        abort();
-    }
-    return js_bigint_normalize(ctx, r);
-}
+/* ported to Zig (quickjs.zig) */
 
-static JSBigInt *js_bigint_not(JSContext *ctx, const JSBigInt *a)
-{
-    JSBigInt *r;
-    int i;
-    
-    r = js_bigint_new(ctx, a->len);
-    if (!r)
-        return NULL;
-    for(i = 0; i < a->len; i++) {
-        r->tab[i] = ~a->tab[i];
-    }
-    /* no normalization is needed */
-    return r;
-}
-
-static JSBigInt *js_bigint_shl(JSContext *ctx, const JSBigInt *a,
-                               unsigned int shift1)
-{
-    int d, i, shift;
-    JSBigInt *r;
-    js_limb_t l;
-
-    if (a->len == 1 && a->tab[0] == 0)
-        return js_bigint_new_si(ctx, 0); /* zero case */
-    d = shift1 / JS_LIMB_BITS;
-    shift = shift1 % JS_LIMB_BITS;
-    r = js_bigint_new(ctx, a->len + d);
-    if (!r)
-        return NULL;
-    for(i = 0; i < d; i++)
-        r->tab[i] = 0;
-    if (shift == 0) {
-        for(i = 0; i < a->len; i++) {
-            r->tab[i + d] = a->tab[i];
-        }
-    } else {
-        l = mp_shl(r->tab + d, a->tab, a->len, shift);
-        if (js_bigint_sign(a))
-            l |= (js_limb_t)(-1) << shift;
-        r = js_bigint_extend(ctx, r, l);
-    }
-    return r;
-}
-
-static JSBigInt *js_bigint_shr(JSContext *ctx, const JSBigInt *a,
-                               unsigned int shift1)
-{
-    int d, i, shift, a_sign, n1;
-    JSBigInt *r;
-
-    d = shift1 / JS_LIMB_BITS;
-    shift = shift1 % JS_LIMB_BITS;
-    a_sign = js_bigint_sign(a);
-    if (d >= a->len)
-        return js_bigint_new_si(ctx, -a_sign);
-    n1 = a->len - d;
-    r = js_bigint_new(ctx, n1);
-    if (!r)
-        return NULL;
-    if (shift == 0) {
-        for(i = 0; i < n1; i++) {
-            r->tab[i] = a->tab[i + d];
-        }
-        /* no normalization is needed */
-    } else {
-        mp_shr(r->tab, a->tab + d, n1, shift, -a_sign);
-        r = js_bigint_normalize(ctx, r);
-    }
-    return r;
-}
+/* ported to Zig (quickjs.zig) */
 
 static JSBigInt *js_bigint_pow(JSContext *ctx, const JSBigInt *a, JSBigInt *b)
 {
@@ -12089,36 +11976,7 @@ static int js_bigint_float64_cmp(JSContext *ctx, const JSBigInt *a,
 }
 
 /* return -1, 0 or 1 */
-static int js_bigint_cmp(JSContext *ctx, const JSBigInt *a,
-                         const JSBigInt *b)
-{
-    int a_sign, b_sign, res, i;
-    a_sign = js_bigint_sign(a);
-    b_sign = js_bigint_sign(b);
-    if (a_sign != b_sign) {
-        res = 1 - 2 * a_sign;
-    } else {
-        /* we assume the numbers are normalized */
-        if (a->len != b->len) {
-            if (a->len < b->len)
-                res = 2 * a_sign - 1;
-            else
-                res = 1 - 2 * a_sign;
-        } else {
-            res = 0;
-            for(i = a->len -1; i >= 0; i--) {
-                if (a->tab[i] != b->tab[i]) {
-                    if (a->tab[i] < b->tab[i])
-                        res = -1;
-                    else
-                        res = 1;
-                    break;
-                }
-            }
-        }
-    }
-    return res;
-}
+/* ported to Zig (quickjs.zig) */
 
 /* contains 10^i */
 static const js_limb_t js_pow_dec[JS_LIMB_DIGITS + 1] = {
@@ -32282,6 +32140,9 @@ const int zig_OP_insert3 = OP_insert3;
 const int zig_OP_perm4 = OP_perm4;
 const int zig_OP_nop = OP_nop;
 const int zig_OP_rot3l = OP_rot3l;
+const int zig_OP_or = OP_or;
+const int zig_OP_and = OP_and;
+const int zig_OP_xor = OP_xor;
 
 static int optimize_scope_make_ref(JSContext *ctx, JSFunctionDef *s,
                                    DynBuf *bc, uint8_t *bc_buf,
