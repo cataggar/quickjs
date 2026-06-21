@@ -523,6 +523,10 @@ typedef struct JSBigInt {
                         possible length >= 1 */
 } JSBigInt;
 
+/* ported to Zig (quickjs.zig) */
+JSBigInt *js_bigint_add(JSContext *ctx, const JSBigInt *a, const JSBigInt *b, int b_neg);
+JSBigInt *js_bigint_mul(JSContext *ctx, const JSBigInt *a, const JSBigInt *b);
+
 /* this bigint structure can hold a 64 bit integer */
 typedef struct {
     js_limb_t big_int_buf[sizeof(JSBigInt) / sizeof(js_limb_t)]; /* for JSBigInt */
@@ -11341,7 +11345,7 @@ static inline js_limb_t js_limb_safe_clz(js_limb_t a)
    1 <= shift <= LIMB_BITS - 1 */
 /* ported to Zig (quickjs.zig) */
 
-static JSBigInt *js_bigint_new(JSContext *ctx, int len)
+JSBigInt *js_bigint_new(JSContext *ctx, int len)
 {
     JSBigInt *r;
     if (len > JS_BIGINT_MAX_SIZE) {
@@ -11504,7 +11508,7 @@ static JSBigInt *js_bigint_normalize1(JSContext *ctx, JSBigInt *a, int l)
     return a;
 }
 
-static JSBigInt *js_bigint_normalize(JSContext *ctx, JSBigInt *a)
+JSBigInt *js_bigint_normalize(JSContext *ctx, JSBigInt *a)
 {
     return js_bigint_normalize1(ctx, a, a->len);
 }
@@ -11535,7 +11539,7 @@ static js_slimb_t js_bigint_get_si_sat(const JSBigInt *a)
 }
 
 /* add the op1 limb */
-static JSBigInt *js_bigint_extend(JSContext *ctx, JSBigInt *r,
+JSBigInt *js_bigint_extend(JSContext *ctx, JSBigInt *r,
                                   js_limb_t op1)
 {
     int n2 = r->len;
@@ -11561,45 +11565,7 @@ static JSBigInt *js_bigint_extend(JSContext *ctx, JSBigInt *r,
 /* return NULL in case of error. Compute a + b (b_neg = 0) or a - b
    (b_neg = 1) */
 /* XXX: optimize */
-static JSBigInt *js_bigint_add(JSContext *ctx, const JSBigInt *a,
-                               const JSBigInt *b, int b_neg)
-{
-    JSBigInt *r;
-    int n1, n2, i;
-    js_limb_t carry, op1, op2, a_sign, b_sign;
-    
-    n2 = max_int(a->len, b->len);
-    n1 = min_int(a->len, b->len);
-    r = js_bigint_new(ctx, n2);
-    if (!r)
-        return NULL;
-    /* XXX: optimize */
-    /* common part */
-    carry = b_neg;
-    for(i = 0; i < n1; i++) {
-        op1 = a->tab[i];
-        op2 = b->tab[i] ^ (-b_neg);
-        ADDC(r->tab[i], carry, op1, op2, carry);
-    }
-    a_sign = -js_bigint_sign(a);
-    b_sign = (-js_bigint_sign(b)) ^ (-b_neg);
-    /* part with sign extension of one operand  */
-    if (a->len > b->len) {
-        for(i = n1; i < n2; i++) {
-            op1 = a->tab[i];
-            ADDC(r->tab[i], carry, op1, b_sign, carry);
-        }
-    } else if (a->len < b->len) {
-        for(i = n1; i < n2; i++) {
-            op2 = b->tab[i] ^ (-b_neg);
-            ADDC(r->tab[i], carry, a_sign, op2, carry);
-        }
-    }
-
-    /* part with sign extension for both operands. Extend the result
-       if necessary */
-    return js_bigint_extend(ctx, r, a_sign + b_sign + carry);
-}
+/* ported to Zig (quickjs.zig) */
 
 /* XXX: optimize */
 static JSBigInt *js_bigint_neg(JSContext *ctx, const JSBigInt *a)
@@ -11610,23 +11576,7 @@ static JSBigInt *js_bigint_neg(JSContext *ctx, const JSBigInt *a)
     return js_bigint_add(ctx, b, a, 1);
 }
 
-static JSBigInt *js_bigint_mul(JSContext *ctx, const JSBigInt *a,
-                               const JSBigInt *b)
-{
-    JSBigInt *r;
-    
-    r = js_bigint_new(ctx, a->len + b->len);
-    if (!r)
-        return NULL;
-    mp_mul_basecase(r->tab, a->tab, a->len, b->tab, b->len);
-    /* correct the result if negative operands (no overflow is
-       possible) */
-    if (js_bigint_sign(a))
-        mp_sub(r->tab + a->len, r->tab + a->len, b->tab, b->len, 0);
-    if (js_bigint_sign(b))
-        mp_sub(r->tab + b->len, r->tab + b->len, a->tab, a->len, 0);
-    return js_bigint_normalize(ctx, r);
-}
+/* ported to Zig (quickjs.zig) */
 
 /* return the division or the remainder. 'b' must be != 0. return NULL
    in case of exception (division by zero or memory error) */

@@ -128,6 +128,13 @@ inline fn idx(i: anytype) usize {
     return @intCast(i);
 }
 
+inline fn min_int(a: c_int, b: c_int) c_int {
+    return @min(a, b);
+}
+inline fn max_int(a: c_int, b: c_int) c_int {
+    return @max(a, b);
+}
+
 export fn mp_add(res: [*c]js_limb_t, op1: [*c]const js_limb_t, op2: [*c]const js_limb_t, n: js_limb_t, carry_in: js_limb_t) callconv(.c) js_limb_t {
     var carry = carry_in;
     var i: usize = 0;
@@ -579,4 +586,86 @@ export fn is_regexp_allowed(tok: c_int) callconv(.c) c_int {
         tok == ')' or tok == ']' or tok == '}' or tok == zig_TOK_IDENT)
         return 0; // FALSE
     return 1; // TRUE
+}
+
+// ===========================================================================
+// BigInt arithmetic layer (operates on JSBigInt, sits on the mp_* primitives).
+// JSContext is opaque here; allocation/normalization stay in C and are called
+// via extern. JSBigInt mirrors quickjs.c:519-524.
+// ===========================================================================
+
+const JSBigInt = extern struct { len: u32 };
+// Offset of the flexible js_limb_t tab[] within JSBigInt (len + alignment pad).
+const BI_TAB_OFF: usize = std.mem.alignForward(usize, @sizeOf(u32), @alignOf(js_limb_t));
+
+inline fn biTab(a: *JSBigInt) [*c]js_limb_t {
+    return @ptrFromInt(@intFromPtr(a) + BI_TAB_OFF);
+}
+inline fn biTabC(a: *const JSBigInt) [*c]const js_limb_t {
+    return @ptrFromInt(@intFromPtr(a) + BI_TAB_OFF);
+}
+// return 0 or 1 depending on the sign
+inline fn biSign(a: *const JSBigInt) js_limb_t {
+    return biTabC(a)[a.len - 1] >> (JS_LIMB_BITS - 1);
+}
+
+const AddcResult = struct { res: js_limb_t, carry: js_limb_t };
+inline fn addc(op1: js_limb_t, op2: js_limb_t, carry_in: js_limb_t) AddcResult {
+    const v = op1;
+    var a = v +% op2;
+    const k1: js_limb_t = @intFromBool(a < v);
+    a = a +% carry_in;
+    return .{ .res = a, .carry = @as(js_limb_t, @intFromBool(a < carry_in)) | k1 };
+}
+
+extern fn js_bigint_new(ctx: ?*anyopaque, len: c_int) callconv(.c) ?*JSBigInt;
+extern fn js_bigint_extend(ctx: ?*anyopaque, r: *JSBigInt, op1: js_limb_t) callconv(.c) ?*JSBigInt;
+extern fn js_bigint_normalize(ctx: ?*anyopaque, a: *JSBigInt) callconv(.c) ?*JSBigInt;
+
+// Compute a + b (b_neg = 0) or a - b (b_neg = 1). Return NULL on error.
+export fn js_bigint_add(ctx: ?*anyopaque, a: *const JSBigInt, b: *const JSBigInt, b_neg: c_int) callconv(.c) ?*JSBigInt {
+    const n2 = max_int(@intCast(a.len), @intCast(b.len));
+    const n1 = min_int(@intCast(a.len), @intCast(b.len));
+    const r = js_bigint_new(ctx, n2) orelse return null;
+    const rt = biTab(r);
+    const at = biTabC(a);
+    const bt = biTabC(b);
+    const nbn: js_limb_t = 0 -% @as(js_limb_t, @intCast(b_neg));
+    var carry: js_limb_t = @intCast(b_neg);
+    var i: c_int = 0;
+    while (i < n1) : (i += 1) {
+        const rr = addc(at[idx(i)], bt[idx(i)] ^ nbn, carry);
+        rt[idx(i)] = rr.res;
+        carry = rr.carry;
+    }
+    const a_sign: js_limb_t = 0 -% biSign(a);
+    const b_sign: js_limb_t = (0 -% biSign(b)) ^ nbn;
+    if (a.len > b.len) {
+        while (i < n2) : (i += 1) {
+            const rr = addc(at[idx(i)], b_sign, carry);
+            rt[idx(i)] = rr.res;
+            carry = rr.carry;
+        }
+    } else if (a.len < b.len) {
+        while (i < n2) : (i += 1) {
+            const rr = addc(a_sign, bt[idx(i)] ^ nbn, carry);
+            rt[idx(i)] = rr.res;
+            carry = rr.carry;
+        }
+    }
+    return js_bigint_extend(ctx, r, a_sign +% b_sign +% carry);
+}
+
+export fn js_bigint_mul(ctx: ?*anyopaque, a: *const JSBigInt, b: *const JSBigInt) callconv(.c) ?*JSBigInt {
+    const r = js_bigint_new(ctx, @as(c_int, @intCast(a.len)) + @as(c_int, @intCast(b.len))) orelse return null;
+    const rt = biTab(r);
+    const at = biTabC(a);
+    const bt = biTabC(b);
+    mp_mul_basecase(rt, at, a.len, bt, b.len);
+    // correct the result if negative operands (no overflow is possible)
+    if (biSign(a) != 0)
+        _ = mp_sub(rt + idx(a.len), rt + idx(a.len), bt, @intCast(b.len), 0);
+    if (biSign(b) != 0)
+        _ = mp_sub(rt + idx(b.len), rt + idx(b.len), at, @intCast(a.len), 0);
+    return js_bigint_normalize(ctx, r);
 }
