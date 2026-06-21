@@ -459,3 +459,771 @@ export fn mul_log2_radix(a: c_int, radix: c_int) callconv(.c) c_int {
         return @intCast((@as(i64, a) * @as(i64, mult)) >> MUL_LOG2_RADIX_BASE_LOG2);
     }
 }
+
+// ===========================================================================
+// dtoa: float<->string entry points (js_dtoa, js_atod) and helpers.
+// ===========================================================================
+
+const std = @import("std");
+
+extern "c" fn memmove(dest: ?*anyopaque, src: ?*const anyopaque, n: usize) ?*anyopaque;
+extern fn strstart(str: [*c]const u8, val: [*c]const u8, ptr: [*c][*c]const u8) callconv(.c) c_int;
+
+inline fn ctz32(a: u32) c_int {
+    return @intCast(@ctz(a));
+}
+inline fn min_int(a: c_int, b: c_int) c_int {
+    return @min(a, b);
+}
+inline fn max_int(a: c_int, b: c_int) c_int {
+    return @max(a, b);
+}
+inline fn float64_as_uint64(d: f64) u64 {
+    return @bitCast(d);
+}
+inline fn uint64_as_float64(u: u64) f64 {
+    return @bitCast(u);
+}
+
+const DBIGNUM_LEN_MAX: usize = 52;
+const MANT_LEN_MAX: usize = 18;
+const JS_DTOA_MAX_DIGITS: c_int = 101;
+
+const JS_DTOA_FORMAT_FREE: c_int = 0 << 0;
+const JS_DTOA_FORMAT_FIXED: c_int = 1 << 0;
+const JS_DTOA_FORMAT_FRAC: c_int = 2 << 0;
+const JS_DTOA_FORMAT_MASK: c_int = 3 << 0;
+const JS_DTOA_EXP_AUTO: c_int = 0 << 2;
+const JS_DTOA_EXP_ENABLED: c_int = 1 << 2;
+const JS_DTOA_EXP_DISABLED: c_int = 2 << 2;
+const JS_DTOA_EXP_MASK: c_int = 3 << 2;
+const JS_DTOA_MINUS_ZERO: c_int = 1 << 4;
+
+const JS_ATOD_INT_ONLY: c_int = 1 << 0;
+const JS_ATOD_ACCEPT_BIN_OCT: c_int = 1 << 1;
+const JS_ATOD_ACCEPT_LEGACY_OCTAL: c_int = 1 << 2;
+const JS_ATOD_ACCEPT_UNDERSCORES: c_int = 1 << 3;
+
+const JSDTOATempMem = extern struct { mem: [37]u64 };
+const JSATODTempMem = extern struct { mem: [27]u64 };
+
+const digits_per_limb_table = [35]u8{
+    32, 20, 16, 13, 12, 11, 10, 10, 9, 9, 8, 8, 8, 8, 8, 7, 7, 7, 7, 7, 7, 7, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6,
+};
+const radix_base_table = [35]u32{
+    0x00000000, 0xcfd41b91, 0x00000000, 0x48c27395,
+    0x81bf1000, 0x75db9c97, 0x40000000, 0xcfd41b91,
+    0x3b9aca00, 0x8c8b6d2b, 0x19a10000, 0x309f1021,
+    0x57f6c100, 0x98c29b81, 0x00000000, 0x18754571,
+    0x247dbc80, 0x3547667b, 0x4c4b4000, 0x6b5a6e1d,
+    0x94ace180, 0xcaf18367, 0x0b640000, 0x0e8d4a51,
+    0x1269ae40, 0x17179149, 0x1cb91000, 0x23744899,
+    0x2b73a840, 0x34e63b41, 0x40000000, 0x4cfa3cc1,
+    0x5c13d840, 0x6d91b519, 0x81bf1000,
+};
+const dtoa_max_digits_table = [35]u8{
+    54, 35, 28, 24, 22, 20, 19, 18, 17, 17, 16, 16, 15, 15, 15, 14, 14, 14, 14, 14, 13, 13, 13, 13, 13, 13, 13, 12, 12, 12, 12, 12, 12, 12, 12,
+};
+const atod_max_digits_table = [35]u8{
+    64, 80, 32, 55, 49, 45, 21, 40, 38, 37, 35, 34, 33, 32, 16, 31, 30, 30, 29, 29, 28, 28, 27, 27, 27, 26, 26, 26, 26, 25, 12, 25, 25, 24, 24,
+};
+const max_exponent = [35]i16{
+    1024, 647,  512,  442,  397,  365,  342,  324,
+    309,  297,  286,  277,  269,  263,  256,  251,
+    246,  242,  237,  234,  230,  227,  224,  221,
+    218,  216,  214,  211,  209,  207,  205,  203,
+    202,  200,  199,
+};
+const min_exponent = [35]i16{
+    -1075, -679, -538, -463, -416, -383, -359, -340,
+    -324,  -311, -300, -291, -283, -276, -269, -263,
+    -258,  -254, -249, -245, -242, -238, -235, -232,
+    -229,  -227, -224, -222, -220, -217, -215, -214,
+    -212,  -210, -208,
+};
+
+// len >= 1. 2 <= radix <= 36
+fn limb_to_a(buf: [*c]u8, n_in: limb_t, radix: u32, len: c_int) void {
+    if (radix == 10) {
+        u32toa_len(buf, n_in, @intCast(len));
+    } else {
+        var n = n_in;
+        var i: c_int = len - 1;
+        while (i >= 0) : (i -= 1) {
+            var digit: limb_t = n % radix;
+            n = n / radix;
+            if (digit < 10) digit += '0' else digit += 'a' - 10;
+            buf[@intCast(i)] = @intCast(digit);
+        }
+    }
+}
+
+fn output_digits(buf: [*c]u8, a: *mpb_t, radix: c_int, n_digits1: c_int, dot_pos: c_int) c_int {
+    var n_digits = n_digits1;
+    var radix_bits: c_int = 0;
+    if ((radix & (radix - 1)) == 0) {
+        radix_bits = 31 - @as(c_int, @clz(@as(u32, @intCast(radix))));
+    }
+    const digits_per_limb: c_int = digits_per_limb_table[@intCast(radix - 2)];
+    const t = mpbTab(a);
+    if (radix_bits != 0) {
+        while (true) {
+            const n = min_int(n_digits, digits_per_limb);
+            n_digits -= n;
+            u64toa_bin_len(buf + @as(usize, @intCast(n_digits)), t[0], @intCast(radix_bits), n);
+            if (n_digits == 0) break;
+            mpb_shr_round(a, digits_per_limb * radix_bits, JS_RNDZ);
+        }
+    } else {
+        while (n_digits != 0) {
+            const n = min_int(n_digits, digits_per_limb);
+            n_digits -= n;
+            const r = mp_div1(t, t, @intCast(a.len), radix_base_table[@intCast(radix - 2)], 0);
+            mpb_renorm(a);
+            limb_to_a(buf + @as(usize, @intCast(n_digits)), r, @intCast(radix), n);
+        }
+    }
+    var len = n_digits1;
+    if (dot_pos != n_digits1) {
+        _ = memmove(buf + @as(usize, @intCast(dot_pos + 1)), buf + @as(usize, @intCast(dot_pos)), @intCast(n_digits1 - dot_pos));
+        buf[@intCast(dot_pos)] = '.';
+        len += 1;
+    }
+    return len;
+}
+
+// return (a, e_offset) such that a = a * (radix1*2^radix_shift)^f * 2^-e_offset.
+fn mul_pow(a: *mpb_t, radix1: c_int, radix_shift: c_int, f_in: c_int, is_int: c_int, e: c_int) c_int {
+    var f = f_in;
+    var e_offset: c_int = -f * radix_shift;
+    const t = mpbTab(a);
+    if (radix1 != 1) {
+        const d: c_int = digits_per_limb_table[@intCast(radix1 - 2)];
+        if (f >= 0) {
+            var b: limb_t = 0;
+            var n0: c_int = 0;
+            while (f != 0) {
+                const n = min_int(f, d);
+                if (n != n0) {
+                    b = @intCast(pow_ui(@intCast(radix1), @intCast(n)));
+                    n0 = n;
+                }
+                const h = mp_mul1(t, t, @intCast(a.len), b, 0);
+                if (h != 0) {
+                    t[@intCast(a.len)] = h;
+                    a.len += 1;
+                }
+                f -= n;
+            }
+        } else {
+            f = -f;
+            const l: c_int = @divTrunc(f + d - 1, d);
+            e_offset += l * 32;
+            var extra_bits: c_int = undefined;
+            if (is_int == 0) {
+                extra_bits = max_int(e - mpb_floor_log2(a), 0);
+            } else {
+                extra_bits = max_int(2 + e - e_offset, 0);
+            }
+            e_offset += extra_bits;
+            mpb_shr_round(a, -(l * 32 + extra_bits), JS_RNDZ);
+
+            var b: limb_t = 0;
+            var b_inv: limb_t = 0;
+            var shift: c_int = 0;
+            var n0: c_int = 0;
+            var rem: limb_t = 0;
+            while (f != 0) {
+                const n = min_int(f, d);
+                if (n != n0) {
+                    b = pow_ui_inv(&b_inv, &shift, @intCast(radix1), @intCast(n));
+                    n0 = n;
+                }
+                const r = mp_div1norm(t, t, @intCast(a.len), b, 0, b_inv, shift);
+                rem |= r;
+                mpb_renorm(a);
+                f -= n;
+            }
+            t[0] |= @intFromBool(rem != 0);
+        }
+    }
+    return e_offset;
+}
+
+// tmp1 = round(m*2^e*radix^f).
+fn mul_pow_round(tmp1: *mpb_t, m: u64, e: c_int, radix1: c_int, radix_shift: c_int, f: c_int, rnd_mode: c_int) void {
+    mpb_set_u64(tmp1, m);
+    const e_offset = mul_pow(tmp1, radix1, radix_shift, f, 1, e);
+    mpb_shr_round(tmp1, -e + e_offset, rnd_mode);
+}
+
+// return round(a*2^e_offset) rounded as a float64.
+fn round_to_d(pe: *c_int, a: *mpb_t, e_offset: c_int, rnd_mode: c_int) u64 {
+    var e: c_int = undefined;
+    var m: u64 = undefined;
+    const t = mpbTab(a);
+    if (t[0] == 0 and a.len == 1) {
+        m = 0;
+        e = 0;
+    } else {
+        e = mpb_floor_log2(a) + 1 - e_offset;
+        const prec1: c_int = 53;
+        const e_min: c_int = -1021;
+        var prec: c_int = prec1;
+        if (e < e_min) {
+            prec = prec1 - (e_min - e);
+        }
+        mpb_shr_round(a, e + e_offset - prec, rnd_mode);
+        m = mpb_get_u64(a);
+        m <<= @intCast(53 - prec);
+        if (m >= @as(u64, 1) << 53) {
+            m >>= 1;
+            e += 1;
+        }
+    }
+    pe.* = e;
+    return m;
+}
+
+fn mul_pow_round_to_d(pe: *c_int, a: *mpb_t, radix1: c_int, radix_shift: c_int, f: c_int, rnd_mode: c_int) u64 {
+    const e_offset = mul_pow(a, radix1, radix_shift, f, 0, 55);
+    return round_to_d(pe, a, e_offset, rnd_mode);
+}
+
+export fn js_dtoa_max_len(d: f64, radix: c_int, n_digits: c_int, flags: c_int) callconv(.c) c_int {
+    const fmt = flags & JS_DTOA_FORMAT_MASK;
+    var n: c_int = undefined;
+    var e: c_int = undefined;
+    var a: u64 = undefined;
+    if (fmt != JS_DTOA_FORMAT_FRAC) {
+        if (fmt == JS_DTOA_FORMAT_FREE) {
+            n = dtoa_max_digits_table[@intCast(radix - 2)];
+        } else {
+            n = n_digits;
+        }
+        if ((flags & JS_DTOA_EXP_MASK) == JS_DTOA_EXP_DISABLED) {
+            a = float64_as_uint64(d);
+            e = @intCast((a >> 52) & 0x7ff);
+            if (e == 0x7ff) {
+                n = 0;
+            } else {
+                e -= 1023;
+                n += 10 + @as(c_int, @intCast(@abs(mul_log2_radix(e - 1, radix))));
+            }
+        } else {
+            n += 1 + 1 + 6;
+        }
+    } else {
+        a = float64_as_uint64(d);
+        e = @intCast((a >> 52) & 0x7ff);
+        if (e == 0x7ff) {
+            n = 0;
+        } else {
+            e -= 1023;
+            if (e < 0) {
+                n = 1;
+            } else {
+                n = 2 + mul_log2_radix(e - 1, radix);
+            }
+            n += 1 + 1 + 1 + n_digits;
+        }
+    }
+    return max_int(n, 9);
+}
+
+fn dtoa_malloc(pptr: *[*c]u64, size: usize) [*c]u8 {
+    const ret = pptr.*;
+    pptr.* += (size + 7) / 8;
+    return @ptrCast(ret);
+}
+fn dtoa_free(ptr: [*c]u8) void {
+    _ = ptr;
+}
+
+export fn js_dtoa(buf: [*c]u8, d: f64, radix: c_int, n_digits: c_int, flags: c_int, tmp_mem: *JSDTOATempMem) callconv(.c) c_int {
+    var mptr: [*c]u64 = &tmp_mem.mem[0];
+    const fmt = flags & JS_DTOA_FORMAT_MASK;
+    var E: c_int = undefined;
+    var P: c_int = undefined;
+
+    const tmp1: *mpb_t = @ptrCast(@alignCast(dtoa_malloc(&mptr, @sizeOf(mpb_t) + @sizeOf(limb_t) * DBIGNUM_LEN_MAX)));
+    const mant_max: *mpb_t = @ptrCast(@alignCast(dtoa_malloc(&mptr, @sizeOf(mpb_t) + @sizeOf(limb_t) * MANT_LEN_MAX)));
+    std.debug.assert((@intFromPtr(mptr) - @intFromPtr(&tmp_mem.mem[0])) / 8 <= @sizeOf(JSDTOATempMem) / 8);
+
+    const radix_shift = ctz32(@intCast(radix));
+    const radix1 = radix >> @intCast(radix_shift);
+    const a = float64_as_uint64(d);
+    const sgn: c_int = @intCast(a >> 63);
+    var e: c_int = @intCast((a >> 52) & 0x7ff);
+    var m: u64 = a & ((@as(u64, 1) << 52) - 1);
+    var q = buf;
+    const t1 = mpbTab(tmp1);
+
+    done_blk: {
+        output_blk: {
+            if (e == 0x7ff) {
+                if (m == 0) {
+                    if (sgn != 0) {
+                        q[0] = '-';
+                        q += 1;
+                    }
+                    _ = memcpy(q, "Infinity", 8);
+                    q += 8;
+                } else {
+                    _ = memcpy(q, "NaN", 3);
+                    q += 3;
+                }
+                break :done_blk;
+            } else if (e == 0) {
+                if (m == 0) {
+                    tmp1.len = 1;
+                    t1[0] = 0;
+                    E = 1;
+                    if (fmt == JS_DTOA_FORMAT_FREE) {
+                        P = 1;
+                    } else if (fmt == JS_DTOA_FORMAT_FRAC) {
+                        P = n_digits + 1;
+                    } else {
+                        P = n_digits;
+                    }
+                    if (sgn != 0 and (flags & JS_DTOA_MINUS_ZERO) != 0) {
+                        q[0] = '-';
+                        q += 1;
+                    }
+                    break :output_blk;
+                }
+                const l: c_int = clz64(m) - 11;
+                e -= l - 1;
+                m <<= @intCast(l);
+            } else {
+                m |= @as(u64, 1) << 52;
+            }
+            if (sgn != 0) {
+                q[0] = '-';
+                q += 1;
+            }
+            e -= 1022;
+            if (fmt == JS_DTOA_FORMAT_FREE and
+                e >= 1 and e <= 53 and
+                (m & ((@as(u64, 1) << @as(u6, @intCast(53 - e))) - 1)) == 0 and
+                (flags & JS_DTOA_EXP_MASK) != JS_DTOA_EXP_ENABLED)
+            {
+                m >>= @intCast(53 - e);
+                q += u64toa_radix(q, m, @intCast(radix));
+                break :done_blk;
+            }
+
+            E = 1 + mul_log2_radix(e - 1, radix);
+
+            if (fmt == JS_DTOA_FORMAT_FREE) {
+                const P_max: c_int = dtoa_max_digits_table[@intCast(radix - 2)];
+                const E0 = E;
+                var E_found: c_int = 0;
+                var P_found: c_int = 0;
+                var mant_found: u64 = 0;
+                P = P_max;
+                while (true) {
+                    const mant_max1 = pow_ui(@intCast(radix), @intCast(P));
+                    E = E0;
+                    var mant: u64 = undefined;
+                    while (true) {
+                        mul_pow_round(tmp1, m, e - 53, radix1, radix_shift, P - E, JS_RNDN);
+                        mant = mpb_get_u64(tmp1);
+                        if (mant < mant_max1) break;
+                        E += 1;
+                    }
+                    while ((mant % @as(u64, @intCast(radix))) == 0) {
+                        mant /= @as(u64, @intCast(radix));
+                        P -= 1;
+                    }
+                    var prec_found = false;
+                    if (P_found == 0) {
+                        prec_found = true;
+                    } else {
+                        mpb_set_u64(tmp1, mant);
+                        var e1: c_int = undefined;
+                        const m1 = mul_pow_round_to_d(&e1, tmp1, radix1, radix_shift, E - P, JS_RNDN);
+                        if (m1 == m and e1 == e) {
+                            prec_found = true;
+                        }
+                    }
+                    if (prec_found) {
+                        P_found = P;
+                        E_found = E;
+                        mant_found = mant;
+                        if (P == 1) break;
+                        P -= 1;
+                    } else {
+                        break;
+                    }
+                }
+                P = P_found;
+                E = E_found;
+                mpb_set_u64(tmp1, mant_found);
+            } else if (fmt == JS_DTOA_FORMAT_FRAC) {
+                mul_pow_round(tmp1, m, e - 53, radix1, radix_shift, n_digits, JS_RNDNA);
+                var len = output_digits(q, tmp1, radix, max_int(E + 1, 1) + n_digits, max_int(E + 1, 1));
+                if (q[0] == '0' and len >= 2 and q[1] != '.') {
+                    len -= 1;
+                    _ = memmove(q, q + 1, @intCast(len));
+                }
+                q += @as(usize, @intCast(len));
+                break :done_blk;
+            } else {
+                P = n_digits;
+                mant_max.len = 1;
+                mpbTab(mant_max)[0] = 1;
+                const pow_shift = mul_pow(mant_max, radix1, radix_shift, P, 0, 0);
+                mpb_shr_round(mant_max, pow_shift, JS_RNDZ);
+                while (true) {
+                    mul_pow_round(tmp1, m, e - 53, radix1, radix_shift, P - E, JS_RNDNA);
+                    if (mpb_cmp(tmp1, mant_max) < 0) break;
+                    E += 1;
+                }
+            }
+            break :output_blk;
+        }
+        // output:
+        var E_max: c_int = undefined;
+        if (fmt == JS_DTOA_FORMAT_FIXED) {
+            E_max = n_digits;
+        } else {
+            E_max = @as(c_int, dtoa_max_digits_table[@intCast(radix - 2)]) + 4;
+        }
+        if ((flags & JS_DTOA_EXP_MASK) == JS_DTOA_EXP_ENABLED or
+            ((flags & JS_DTOA_EXP_MASK) == JS_DTOA_EXP_AUTO and (E <= -6 or E > E_max)))
+        {
+            q += @as(usize, @intCast(output_digits(q, tmp1, radix, P, 1)));
+            E -= 1;
+            if (radix == 10) {
+                q[0] = 'e';
+                q += 1;
+            } else if (radix1 == 1 and radix_shift <= 4) {
+                E *= radix_shift;
+                q[0] = 'p';
+                q += 1;
+            } else {
+                q[0] = '@';
+                q += 1;
+            }
+            if (E < 0) {
+                q[0] = '-';
+                q += 1;
+                E = -E;
+            } else {
+                q[0] = '+';
+                q += 1;
+            }
+            q += u32toa(q, @intCast(E));
+        } else if (E <= 0) {
+            q[0] = '0';
+            q += 1;
+            q[0] = '.';
+            q += 1;
+            var i: c_int = 0;
+            while (i < -E) : (i += 1) {
+                q[0] = '0';
+                q += 1;
+            }
+            q += @as(usize, @intCast(output_digits(q, tmp1, radix, P, P)));
+        } else {
+            q += @as(usize, @intCast(output_digits(q, tmp1, radix, P, min_int(P, E))));
+            var i: c_int = 0;
+            while (i < E - P) : (i += 1) {
+                q[0] = '0';
+                q += 1;
+            }
+        }
+    }
+    // done:
+    q[0] = 0;
+    dtoa_free(@ptrCast(mant_max));
+    dtoa_free(@ptrCast(tmp1));
+    return @intCast(@intFromPtr(q) - @intFromPtr(buf));
+}
+
+inline fn to_digit(c: c_int) c_int {
+    if (c >= '0' and c <= '9') {
+        return c - '0';
+    } else if (c >= 'A' and c <= 'Z') {
+        return c - 'A' + 10;
+    } else if (c >= 'a' and c <= 'z') {
+        return c - 'a' + 10;
+    } else {
+        return 36;
+    }
+}
+
+// r = r * radix_base + a. radix_base = 0 means radix_base = 2^32
+fn mpb_mul1_base(r: *mpb_t, radix_base: limb_t, a: limb_t) void {
+    const t = mpbTab(r);
+    if (t[0] == 0 and r.len == 1) {
+        t[0] = a;
+    } else {
+        if (radix_base == 0) {
+            var i: c_int = r.len;
+            while (i >= 0) : (i -= 1) t[@intCast(i + 1)] = t[@intCast(i)];
+            t[0] = a;
+        } else {
+            t[@intCast(r.len)] = mp_mul1(t, t, @intCast(r.len), radix_base, a);
+        }
+        r.len += 1;
+        mpb_renorm(r);
+    }
+}
+
+export fn js_atod(str: [*c]const u8, pnext: [*c][*c]const u8, radix_in: c_int, flags: c_int, tmp_mem: *JSATODTempMem) callconv(.c) f64 {
+    var radix = radix_in;
+    var mptr: [*c]u64 = &tmp_mem.mem[0];
+    var dval: f64 = undefined;
+
+    const tmp0: *mpb_t = @ptrCast(@alignCast(dtoa_malloc(&mptr, @sizeOf(mpb_t) + @sizeOf(limb_t) * DBIGNUM_LEN_MAX)));
+    std.debug.assert((@intFromPtr(mptr) - @intFromPtr(&tmp_mem.mem[0])) / 8 <= @sizeOf(JSATODTempMem) / 8);
+    var sep: c_int = if ((flags & JS_ATOD_ACCEPT_UNDERSCORES) != 0) '_' else 256;
+
+    var p = str;
+    var is_neg: c_int = 0;
+    var p_start: [*c]const u8 = undefined;
+    if (p[0] == '+') {
+        p += 1;
+        p_start = p;
+    } else if (p[0] == '-') {
+        is_neg = 1;
+        p += 1;
+        p_start = p;
+    } else {
+        p_start = p;
+    }
+
+    const t0 = mpbTab(tmp0);
+    var a: u64 = undefined;
+
+    done1_blk: {
+        done_blk: {
+            if (p[0] == '0') {
+                no_prefix: {
+                    if ((p[1] == 'x' or p[1] == 'X') and (radix == 0 or radix == 16)) {
+                        p += 2;
+                        radix = 16;
+                    } else if ((p[1] == 'o' or p[1] == 'O') and radix == 0 and (flags & JS_ATOD_ACCEPT_BIN_OCT) != 0) {
+                        p += 2;
+                        radix = 8;
+                    } else if ((p[1] == 'b' or p[1] == 'B') and radix == 0 and (flags & JS_ATOD_ACCEPT_BIN_OCT) != 0) {
+                        p += 2;
+                        radix = 2;
+                    } else if ((p[1] >= '0' and p[1] <= '9') and radix == 0 and (flags & JS_ATOD_ACCEPT_LEGACY_OCTAL) != 0) {
+                        sep = 256;
+                        var i: usize = 1;
+                        while (p[i] >= '0' and p[i] <= '7') : (i += 1) {}
+                        if (p[i] == '8' or p[i] == '9') break :no_prefix;
+                        p += 1;
+                        radix = 8;
+                    } else {
+                        break :no_prefix;
+                    }
+                    if (to_digit(p[0]) >= radix) {
+                        dval = nan_val;
+                        break :done1_blk;
+                    }
+                }
+            } else {
+                if ((flags & JS_ATOD_INT_ONLY) == 0 and strstart(p, "Infinity", &p) != 0) {
+                    a = @as(u64, 0x7ff) << 52;
+                    break :done_blk;
+                }
+            }
+            if (radix == 0) radix = 10;
+
+            var cur_limb: limb_t = 0;
+            var expn_offset: c_int = 0;
+            var digit_count: c_int = 0;
+            var limb_digit_count: c_int = 0;
+            const max_digits: c_int = atod_max_digits_table[@intCast(radix - 2)];
+            const digits_per_limb: c_int = digits_per_limb_table[@intCast(radix - 2)];
+            const radix_base: limb_t = radix_base_table[@intCast(radix - 2)];
+            const radix_shift = ctz32(@intCast(radix));
+            const radix1 = radix >> @intCast(radix_shift);
+            var radix_bits: c_int = 0;
+            if (radix1 == 1) radix_bits = radix_shift;
+            tmp0.len = 1;
+            t0[0] = 0;
+            var extra_digits: limb_t = 0;
+            var pos: c_int = 0;
+            var dot_pos: c_int = -1;
+            // skip leading zeros
+            while (true) {
+                if (p[0] == '.' and (ptrGtU(p, p_start) or to_digit(p[1]) < radix) and (flags & JS_ATOD_INT_ONLY) == 0) {
+                    if (p[0] == sep) {
+                        dval = nan_val;
+                        break :done1_blk;
+                    }
+                    if (dot_pos >= 0) break;
+                    dot_pos = pos;
+                    p += 1;
+                }
+                if (p[0] == sep and ptrGtU(p, p_start) and p[1] == '0') p += 1;
+                if (p[0] != '0') break;
+                p += 1;
+                pos += 1;
+            }
+
+            const sig_pos = pos;
+            while (true) {
+                if (p[0] == '.' and (ptrGtU(p, p_start) or to_digit(p[1]) < radix) and (flags & JS_ATOD_INT_ONLY) == 0) {
+                    if (p[0] == sep) {
+                        dval = nan_val;
+                        break :done1_blk;
+                    }
+                    if (dot_pos >= 0) break;
+                    dot_pos = pos;
+                    p += 1;
+                }
+                if (p[0] == sep and ptrGtU(p, p_start) and to_digit(p[1]) < radix) p += 1;
+                const c: limb_t = @intCast(to_digit(p[0]));
+                if (c >= radix) break;
+                p += 1;
+                pos += 1;
+                if (digit_count < max_digits) {
+                    cur_limb = cur_limb * @as(limb_t, @intCast(radix)) + c;
+                    limb_digit_count += 1;
+                    if (limb_digit_count == digits_per_limb) {
+                        mpb_mul1_base(tmp0, radix_base, cur_limb);
+                        cur_limb = 0;
+                        limb_digit_count = 0;
+                    }
+                    digit_count += 1;
+                } else {
+                    extra_digits |= c;
+                }
+            }
+            if (limb_digit_count != 0) {
+                mpb_mul1_base(tmp0, @intCast(pow_ui(@intCast(radix), @intCast(limb_digit_count))), cur_limb);
+            }
+            var is_zero: bool = undefined;
+            if (digit_count == 0) {
+                is_zero = true;
+                expn_offset = 0;
+            } else {
+                is_zero = false;
+                if (dot_pos < 0) dot_pos = pos;
+                expn_offset = sig_pos + digit_count - dot_pos;
+            }
+
+            if (radix_bits != 0 and extra_digits != 0) {
+                t0[0] |= 1;
+            }
+
+            var expn: c_int = 0;
+            var expn_overflow: bool = false;
+            var is_bin_exp: bool = false;
+            if ((flags & JS_ATOD_INT_ONLY) == 0 and
+                ((radix == 10 and (p[0] == 'e' or p[0] == 'E')) or
+                    (radix != 10 and (p[0] == '@' or
+                        (radix_bits >= 1 and radix_bits <= 4 and (p[0] == 'p' or p[0] == 'P'))))) and
+                ptrGtU(p, p_start))
+            {
+                is_bin_exp = (p[0] == 'p' or p[0] == 'P');
+                p += 1;
+                var exp_is_neg: c_int = 0;
+                if (p[0] == '+') {
+                    p += 1;
+                } else if (p[0] == '-') {
+                    exp_is_neg = 1;
+                    p += 1;
+                }
+                var c: c_int = to_digit(p[0]);
+                if (c >= 10) {
+                    dval = nan_val;
+                    break :done1_blk;
+                }
+                expn = c;
+                p += 1;
+                while (true) {
+                    if (p[0] == sep and to_digit(p[1]) < 10) p += 1;
+                    c = to_digit(p[0]);
+                    if (c >= 10) break;
+                    if (!expn_overflow) {
+                        if (expn > (@as(c_int, 2147483647) - 2 - 9) / 10) {
+                            expn_overflow = true;
+                        } else {
+                            expn = expn * 10 + c;
+                        }
+                    }
+                    p += 1;
+                }
+                if (exp_is_neg != 0) expn = -expn;
+                if (!is_zero and expn_overflow) {
+                    if (exp_is_neg != 0) {
+                        a = 0;
+                    } else {
+                        a = @as(u64, 0x7ff) << 52;
+                    }
+                    break :done_blk;
+                }
+            }
+
+            if (ptrEqU(p, p_start)) {
+                dval = nan_val;
+                break :done1_blk;
+            }
+
+            if (is_zero) {
+                a = 0;
+            } else {
+                var e: c_int = undefined;
+                var m: u64 = undefined;
+                var expn1: c_int = undefined;
+                ow_blk: {
+                    uf_blk: {
+                        if (radix_bits != 0) {
+                            if (!is_bin_exp) expn *= radix_bits;
+                            expn -= expn_offset * radix_bits;
+                            expn1 = expn + digit_count * radix_bits;
+                            if (expn1 >= 1024 + radix_bits) break :ow_blk;
+                            if (expn1 <= -1075) break :uf_blk;
+                            m = round_to_d(&e, tmp0, -expn, JS_RNDN);
+                        } else {
+                            expn -= expn_offset;
+                            expn1 = expn + digit_count;
+                            if (expn1 >= @as(c_int, max_exponent[@intCast(radix - 2)]) + 1) break :ow_blk;
+                            if (expn1 <= min_exponent[@intCast(radix - 2)]) break :uf_blk;
+                            m = mul_pow_round_to_d(&e, tmp0, radix1, radix_shift, expn, JS_RNDN);
+                        }
+                        if (m == 0) break :uf_blk;
+                        if (e > 1024) break :ow_blk;
+                        if (e < -1073) {
+                            a = 0;
+                        } else if (e < -1021) {
+                            a = m >> @as(u6, @intCast(-e - 1021));
+                        } else {
+                            a = (@as(u64, @intCast(e + 1022)) << 52) | (m & ((@as(u64, 1) << 52) - 1));
+                        }
+                        break :done_blk;
+                    }
+                    // underflow:
+                    a = 0;
+                    break :done_blk;
+                }
+                // overflow:
+                a = @as(u64, 0x7ff) << 52;
+            }
+            break :done_blk;
+        }
+        // done:
+        a |= @as(u64, @intCast(is_neg)) << 63;
+        dval = uint64_as_float64(a);
+    }
+    // done1:
+    if (pnext != null) pnext.* = p;
+    dtoa_free(@ptrCast(tmp0));
+    return dval;
+}
+
+const nan_val: f64 = std.math.nan(f64);
+
+inline fn ptrGtU(a: [*c]const u8, b: [*c]const u8) bool {
+    return @intFromPtr(a) > @intFromPtr(b);
+}
+inline fn ptrEqU(a: [*c]const u8, b: [*c]const u8) bool {
+    return @intFromPtr(a) == @intFromPtr(b);
+}
