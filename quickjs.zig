@@ -796,3 +796,98 @@ export fn js_bigint_shr(ctx: ?*anyopaque, a: *const JSBigInt, shift1: c_uint) ca
     }
     return r;
 }
+
+extern "c" fn memcpy(noalias dest: ?*anyopaque, noalias src: ?*const anyopaque, n: usize) ?*anyopaque;
+extern fn js_malloc(ctx: ?*anyopaque, size: usize) callconv(.c) ?*anyopaque;
+extern fn js_free(ctx: ?*anyopaque, ptr: ?*anyopaque) callconv(.c) void;
+extern fn js_bigint_normalize1(ctx: ?*anyopaque, a: *JSBigInt, l: c_int) callconv(.c) *JSBigInt;
+extern fn js_bigint_throw_div_zero(ctx: ?*anyopaque) callconv(.c) void;
+
+// return the division or the remainder. 'b' must be != 0. return NULL on
+// exception (division by zero or memory error).
+export fn js_bigint_divrem(ctx: ?*anyopaque, a: *const JSBigInt, b: *const JSBigInt, is_rem: c_int) callconv(.c) ?*JSBigInt {
+    const at = biTabC(a);
+    const bt = biTabC(b);
+    if (b.len == 1 and bt[0] == 0) {
+        js_bigint_throw_div_zero(ctx);
+        return null;
+    }
+    const a_sign: c_int = @intCast(biSign(a));
+    const b_sign: c_int = @intCast(biSign(b));
+    var na: c_int = @intCast(a.len);
+    var nb: c_int = @intCast(b.len);
+
+    var r = js_bigint_new(ctx, na + 2) orelse return null;
+    const rt = biTab(r);
+    if (a_sign != 0) {
+        _ = mp_neg(rt, at, na);
+    } else {
+        _ = memcpy(rt, at, @as(usize, @intCast(na)) * @sizeOf(js_limb_t));
+    }
+    while (na > 1 and rt[idx(na - 1)] == 0) na -= 1;
+
+    const tabb_raw = js_malloc(ctx, @as(usize, @intCast(nb)) * @sizeOf(js_limb_t));
+    if (tabb_raw == null) {
+        js_free(ctx, r);
+        return null;
+    }
+    const tabb: [*c]js_limb_t = @ptrCast(@alignCast(tabb_raw));
+    if (b_sign != 0) {
+        _ = mp_neg(tabb, bt, nb);
+    } else {
+        _ = memcpy(tabb, bt, @as(usize, @intCast(nb)) * @sizeOf(js_limb_t));
+    }
+    while (nb > 1 and tabb[idx(nb - 1)] == 0) nb -= 1;
+
+    // trivial case if 'a' is small
+    if (na < nb) {
+        js_free(ctx, r);
+        js_free(ctx, tabb);
+        if (is_rem != 0) {
+            // r = a
+            const r2 = js_bigint_new(ctx, @intCast(a.len)) orelse return null;
+            _ = memcpy(biTab(r2), at, @as(usize, a.len) * @sizeOf(js_limb_t));
+            return r2;
+        } else {
+            return js_bigint_new_si(ctx, 0); // q = 0
+        }
+    }
+
+    // normalize 'b'
+    const shift: c_int = @intCast(@clz(tabb[idx(nb - 1)]));
+    if (shift != 0) {
+        _ = mp_shl(tabb, tabb, nb, shift);
+        const h = mp_shl(rt, rt, na, shift);
+        if (h != 0) {
+            rt[idx(na)] = h;
+            na += 1;
+        }
+    }
+
+    const q = js_bigint_new(ctx, na - nb + 2) orelse { // one more limb for the sign
+        js_free(ctx, r);
+        js_free(ctx, tabb);
+        return null;
+    };
+    const qt = biTab(q);
+    mp_divnorm(qt, rt, @intCast(na), tabb, @intCast(nb));
+    js_free(ctx, tabb);
+
+    if (is_rem != 0) {
+        js_free(ctx, q);
+        if (shift != 0)
+            _ = mp_shr(rt, rt, nb, shift, 0);
+        rt[idx(nb)] = 0;
+        nb += 1;
+        if (a_sign != 0)
+            _ = mp_neg(rt, rt, nb);
+        r = js_bigint_normalize1(ctx, r, nb);
+        return r;
+    } else {
+        js_free(ctx, r);
+        qt[idx(na - nb + 1)] = 0;
+        if ((a_sign ^ b_sign) != 0)
+            _ = mp_neg(qt, qt, @intCast(q.len));
+        return js_bigint_normalize(ctx, q);
+    }
+}

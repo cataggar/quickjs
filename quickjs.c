@@ -541,6 +541,7 @@ JSBigInt *js_bigint_not(JSContext *ctx, const JSBigInt *a);
 JSBigInt *js_bigint_logic(JSContext *ctx, const JSBigInt *a, const JSBigInt *b, OPCodeEnum op);
 JSBigInt *js_bigint_shl(JSContext *ctx, const JSBigInt *a, unsigned int shift1);
 JSBigInt *js_bigint_shr(JSContext *ctx, const JSBigInt *a, unsigned int shift1);
+JSBigInt *js_bigint_divrem(JSContext *ctx, const JSBigInt *a, const JSBigInt *b, BOOL is_rem);
     
 typedef enum {
     JS_AUTOINIT_ID_PROTOTYPE,
@@ -11353,6 +11354,12 @@ static inline js_limb_t js_limb_safe_clz(js_limb_t a)
    1 <= shift <= LIMB_BITS - 1 */
 /* ported to Zig (quickjs.zig) */
 
+/* throw shim for quickjs.zig (avoids JSValue return ABI from Zig) */
+void js_bigint_throw_div_zero(JSContext *ctx)
+{
+    JS_ThrowRangeError(ctx, "BigInt division by zero");
+}
+
 JSBigInt *js_bigint_new(JSContext *ctx, int len)
 {
     JSBigInt *r;
@@ -11492,7 +11499,7 @@ static JSBigInt *js_bigint_new_di(JSContext *ctx, js_sdlimb_t a)
 /* Remove redundant high order limbs. Warning: 'a' may be
    reallocated. Can never fail.
 */
-static JSBigInt *js_bigint_normalize1(JSContext *ctx, JSBigInt *a, int l)
+JSBigInt *js_bigint_normalize1(JSContext *ctx, JSBigInt *a, int l)
 {
     js_limb_t v;
 
@@ -11582,106 +11589,7 @@ JSBigInt *js_bigint_extend(JSContext *ctx, JSBigInt *r,
 
 /* return the division or the remainder. 'b' must be != 0. return NULL
    in case of exception (division by zero or memory error) */
-static JSBigInt *js_bigint_divrem(JSContext *ctx, const JSBigInt *a,
-                                  const JSBigInt *b, BOOL is_rem)
-{
-    JSBigInt *r, *q;
-    js_limb_t *tabb, h;
-    int na, nb, a_sign, b_sign, shift;
-    
-    if (b->len == 1 && b->tab[0] == 0) {
-        JS_ThrowRangeError(ctx, "BigInt division by zero");
-        return NULL;
-    }
-    
-    a_sign = js_bigint_sign(a);
-    b_sign = js_bigint_sign(b);
-    na = a->len;
-    nb = b->len;
-
-    r = js_bigint_new(ctx, na + 2); 
-    if (!r)
-        return NULL;
-    if (a_sign) {
-        mp_neg(r->tab, a->tab, na);
-    } else {
-        memcpy(r->tab, a->tab, na * sizeof(a->tab[0]));
-    }
-    /* normalize */
-    while (na > 1 && r->tab[na - 1] == 0)
-        na--;
-
-    tabb = js_malloc(ctx, nb * sizeof(tabb[0]));
-    if (!tabb) {
-        js_free(ctx, r);
-        return NULL;
-    }
-    if (b_sign) {
-        mp_neg(tabb, b->tab, nb);
-    } else {
-        memcpy(tabb, b->tab, nb * sizeof(tabb[0]));
-    }
-    /* normalize */
-    while (nb > 1 && tabb[nb - 1] == 0)
-        nb--;
-
-    /* trivial case if 'a' is small */
-    if (na < nb) {
-        js_free(ctx, r);
-        js_free(ctx, tabb);
-        if (is_rem) {
-            /* r = a */
-            r = js_bigint_new(ctx, a->len);
-            if (!r)
-                return NULL;
-            memcpy(r->tab, a->tab, a->len * sizeof(a->tab[0])); 
-            return r;
-        } else {
-            /* q = 0 */
-            return js_bigint_new_si(ctx, 0);
-        }
-    }
-
-    /* normalize 'b' */
-    shift = js_limb_clz(tabb[nb - 1]);
-    if (shift != 0) {
-        mp_shl(tabb, tabb, nb, shift);
-        h = mp_shl(r->tab, r->tab, na, shift);
-        if (h != 0)
-            r->tab[na++] = h;
-    }
-
-    q = js_bigint_new(ctx, na - nb + 2); /* one more limb for the sign */
-    if (!q) {
-        js_free(ctx, r);
-        js_free(ctx, tabb);
-        return NULL;
-    }
-
-    //    js_bigint_dump1(ctx, "a", r->tab, na);
-    //    js_bigint_dump1(ctx, "b", tabb, nb);
-    mp_divnorm(q->tab, r->tab, na, tabb, nb);
-    js_free(ctx, tabb);
-
-    if (is_rem) {
-        js_free(ctx, q);
-        if (shift != 0)
-            mp_shr(r->tab, r->tab, nb, shift, 0);
-        r->tab[nb++] = 0;
-        if (a_sign)
-            mp_neg(r->tab, r->tab, nb);
-        r = js_bigint_normalize1(ctx, r, nb);
-        return r;
-    } else {
-        js_free(ctx, r);
-        q->tab[na - nb + 1] = 0;
-        if (a_sign ^ b_sign) {
-            mp_neg(q->tab, q->tab, q->len);
-        }
-        q = js_bigint_normalize(ctx, q);
-        return q;
-    }
-}
+/* ported to Zig (quickjs.zig) */
 
 /* and, or, xor */
 /* ported to Zig (quickjs.zig) */
