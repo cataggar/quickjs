@@ -47,6 +47,35 @@
 #include "libunicode.h"
 #include "dtoa.h"
 
+/* Ported to Zig (quickjs.zig). */
+double js_pow(double a, double b);
+BOOL is_safe_integer(double d);
+int get_prop_flags(int flags, int def_flags);
+int get_block_size_index(size_t size);
+size_t count_ascii(const uint8_t *buf, size_t len);
+uint64_t shr_rndn(uint64_t a, int n);
+double js_fmin(double a, double b);
+double js_fmax(double a, double b);
+double js_math_sign(double a);
+double js_math_round(double a);
+double js_math_fround(double a);
+int64_t math_mod(int64_t a, int64_t b);
+int64_t floor_div(int64_t a, int64_t b);
+BOOL is_valid_raw_json_char(int c);
+BOOL has_lf_in_range(const uint8_t *p1, const uint8_t *p2);
+uint32_t shape_hash(uint32_t h, uint32_t val);
+uint32_t get_shape_hash(uint32_t h, int hash_bits);
+void skip_shebang(const uint8_t **pp, const uint8_t *buf_end);
+int get_line_col(int *pcol_num, const uint8_t *buf, size_t len);
+void bc_set_flags(uint32_t *pflags, int *pidx, uint32_t val, int n);
+uint32_t bc_get_flags(uint32_t flags, int *pidx, int n);
+int get_with_scope_opcode(int op);
+BOOL can_opt_put_ref_value(const uint8_t *bc_buf, int pos);
+BOOL can_opt_put_global_ref_value(const uint8_t *bc_buf, int pos);
+BOOL token_is_ident(int tok);
+BOOL is_regexp_allowed(int tok);
+BOOL check_define_prop_flags(int prop_flags, int flags);
+
 #define OPTIMIZE         1
 #define SHORT_OPCODES    1
 #if defined(__EMSCRIPTEN__)
@@ -494,12 +523,25 @@ typedef struct JSBigInt {
                         possible length >= 1 */
 } JSBigInt;
 
+/* ported to Zig (quickjs.zig) */
+JSBigInt *js_bigint_add(JSContext *ctx, const JSBigInt *a, const JSBigInt *b, int b_neg);
+JSBigInt *js_bigint_mul(JSContext *ctx, const JSBigInt *a, const JSBigInt *b);
+
 /* this bigint structure can hold a 64 bit integer */
 typedef struct {
     js_limb_t big_int_buf[sizeof(JSBigInt) / sizeof(js_limb_t)]; /* for JSBigInt */
     /* must come just after */
     js_limb_t tab[(64 + JS_LIMB_BITS - 1) / JS_LIMB_BITS];
 } JSBigIntBuf;
+
+/* ported to Zig (quickjs.zig) */
+JSBigInt *js_bigint_neg(JSContext *ctx, const JSBigInt *a);
+int js_bigint_cmp(JSContext *ctx, const JSBigInt *a, const JSBigInt *b);
+JSBigInt *js_bigint_not(JSContext *ctx, const JSBigInt *a);
+JSBigInt *js_bigint_logic(JSContext *ctx, const JSBigInt *a, const JSBigInt *b, OPCodeEnum op);
+JSBigInt *js_bigint_shl(JSContext *ctx, const JSBigInt *a, unsigned int shift1);
+JSBigInt *js_bigint_shr(JSContext *ctx, const JSBigInt *a, unsigned int shift1);
+JSBigInt *js_bigint_divrem(JSContext *ctx, const JSBigInt *a, const JSBigInt *b, BOOL is_rem);
     
 typedef enum {
     JS_AUTOINIT_ID_PROTOTYPE,
@@ -1450,20 +1492,7 @@ static const uint16_t js_malloc_block_sizes[JS_MALLOC_BLOCK_SIZE_COUNT] = {
     512,
 };
 
-static int get_block_size_index(size_t size)
-{
-    if (size <= 16) {
-        return 0;
-    } else if (size <= 128) {
-        return (size + 7) / 8 - 2;
-    } else if (size <= 256) {
-        return (size + 15) / 16 + 6;
-    } else if (size <= 512) {
-        return (size + 31) / 32 + 14;
-    } else {
-        return JS_MALLOC_BLOCK_SIZE_COUNT;
-    }
-}
+/* ported to Zig (quickjs.zig) */
 
 static JSMallocBlockHeader *get_zero_size_block(JSMallocContext *s)
 {
@@ -3446,15 +3475,7 @@ static JSAtom JS_NewAtomStr(JSContext *ctx, JSString *p)
 }
 
 /* XXX: optimize */
-static size_t count_ascii(const uint8_t *buf, size_t len)
-{
-    const uint8_t *p, *p_end;
-    p = buf;
-    p_end = buf + len;
-    while (p < p_end && *p < 128)
-        p++;
-    return p - buf;
-}
+/* ported to Zig (quickjs.zig) */
 
 /* str is UTF-8 encoded */
 JSAtom JS_NewAtomLen(JSContext *ctx, const char *str, size_t len)
@@ -5142,16 +5163,10 @@ static int init_shape_hash(JSRuntime *rt)
 }
 
 /* same magic hash multiplier as the Linux kernel */
-static uint32_t shape_hash(uint32_t h, uint32_t val)
-{
-    return (h + val) * 0x9e370001;
-}
+/* ported to Zig (quickjs.zig) */
 
 /* truncate the shape hash to 'hash_bits' bits */
-static uint32_t get_shape_hash(uint32_t h, int hash_bits)
-{
-    return h >> (32 - hash_bits);
-}
+/* ported to Zig (quickjs.zig) */
 
 static uint32_t shape_initial_hash(JSObject *proto)
 {
@@ -10116,12 +10131,7 @@ int JS_SetPropertyStr(JSContext *ctx, JSValueConst this_obj,
    it, otherwise def_flags is used)
    Note: makes assumption about the bit pattern of the flags
 */
-static int get_prop_flags(int flags, int def_flags)
-{
-    int mask;
-    mask = (flags >> JS_PROP_HAS_SHIFT) & JS_PROP_C_W_E;
-    return (flags & mask) | (def_flags & ~mask);
-}
+/* ported to Zig (quickjs.zig) */
 
 static int JS_CreateProperty(JSContext *ctx, JSObject *p,
                              JSAtom prop, JSValueConst val,
@@ -10269,34 +10279,7 @@ static int JS_CreateProperty(JSContext *ctx, JSObject *p,
 }
 
 /* return FALSE if not OK */
-static BOOL check_define_prop_flags(int prop_flags, int flags)
-{
-    BOOL has_accessor, is_getset;
-
-    if (!(prop_flags & JS_PROP_CONFIGURABLE)) {
-        if ((flags & (JS_PROP_HAS_CONFIGURABLE | JS_PROP_CONFIGURABLE)) ==
-            (JS_PROP_HAS_CONFIGURABLE | JS_PROP_CONFIGURABLE)) {
-            return FALSE;
-        }
-        if ((flags & JS_PROP_HAS_ENUMERABLE) &&
-            (flags & JS_PROP_ENUMERABLE) != (prop_flags & JS_PROP_ENUMERABLE))
-            return FALSE;
-        if (flags & (JS_PROP_HAS_VALUE | JS_PROP_HAS_WRITABLE |
-                     JS_PROP_HAS_GET | JS_PROP_HAS_SET)) {
-            has_accessor = ((flags & (JS_PROP_HAS_GET | JS_PROP_HAS_SET)) != 0);
-            is_getset = ((prop_flags & JS_PROP_TMASK) == JS_PROP_GETSET);
-            if (has_accessor != is_getset)
-                return FALSE;
-            if (!is_getset && !(prop_flags & JS_PROP_WRITABLE)) {
-                /* not writable: cannot set the writable bit */
-                if ((flags & (JS_PROP_HAS_WRITABLE | JS_PROP_WRITABLE)) ==
-                    (JS_PROP_HAS_WRITABLE | JS_PROP_WRITABLE))
-                    return FALSE;
-            }
-        }
-    }
-    return TRUE;
-}
+/* ported to Zig (quickjs.zig) */
 
 /* ensure that the shape can be safely modified */
 static int js_shape_prepare_update(JSContext *ctx, JSObject *p,
@@ -11288,6 +11271,20 @@ do {                                                    \
     res = __a;                                          \
 } while (0)
 
+/* BigInt mp_* primitives ported to Zig (quickjs.zig). */
+js_limb_t mp_add(js_limb_t *res, const js_limb_t *op1, const js_limb_t *op2, js_limb_t n, js_limb_t carry);
+js_limb_t mp_sub(js_limb_t *res, const js_limb_t *op1, const js_limb_t *op2, int n, js_limb_t carry);
+js_limb_t mp_neg(js_limb_t *res, const js_limb_t *op2, int n);
+js_limb_t mp_mul1(js_limb_t *tabr, const js_limb_t *taba, js_limb_t n, js_limb_t b, js_limb_t l);
+js_limb_t mp_div1(js_limb_t *tabr, const js_limb_t *taba, js_limb_t n, js_limb_t b, js_limb_t r);
+js_limb_t mp_add_mul1(js_limb_t *tabr, const js_limb_t *taba, js_limb_t n, js_limb_t b);
+void mp_mul_basecase(js_limb_t *result, const js_limb_t *op1, js_limb_t op1_size, const js_limb_t *op2, js_limb_t op2_size);
+js_limb_t mp_sub_mul1(js_limb_t *tabr, const js_limb_t *taba, js_limb_t n, js_limb_t b);
+js_limb_t mp_div1norm(js_limb_t *tabr, const js_limb_t *taba, js_limb_t n, js_limb_t b, js_limb_t r);
+void mp_divnorm(js_limb_t *tabq, js_limb_t *taba, js_limb_t na, const js_limb_t *tabb, js_limb_t nb);
+js_limb_t mp_shl(js_limb_t *tabr, const js_limb_t *taba, int n, int shift);
+js_limb_t mp_shr(js_limb_t *tab_r, const js_limb_t *tab, int n, int shift, js_limb_t high);
+
 #if JS_LIMB_BITS == 32
 /* a != 0 */
 static inline js_limb_t js_limb_clz(js_limb_t a)
@@ -11310,285 +11307,60 @@ static inline js_limb_t js_limb_safe_clz(js_limb_t a)
         return js_limb_clz(a);
 }
 
-static js_limb_t mp_add(js_limb_t *res, const js_limb_t *op1, const js_limb_t *op2,
-                     js_limb_t n, js_limb_t carry)
-{
-    int i;
-    for(i = 0;i < n; i++) {
-        ADDC(res[i], carry, op1[i], op2[i], carry);
-    }
-    return carry;
-}
+/* ported to Zig (quickjs.zig) */
 
-static js_limb_t mp_sub(js_limb_t *res, const js_limb_t *op1, const js_limb_t *op2,
-                        int n, js_limb_t carry)
-{
-    int i;
-    js_limb_t k, a, v, k1;
-
-    k = carry;
-    for(i=0;i<n;i++) {
-        v = op1[i];
-        a = v - op2[i];
-        k1 = a > v;
-        v = a - k;
-        k = (v > a) | k1;
-        res[i] = v;
-    }
-    return k;
-}
+/* ported to Zig (quickjs.zig) */
 
 /* compute 0 - op2. carry = 0 or 1. */
-static js_limb_t mp_neg(js_limb_t *res, const js_limb_t *op2, int n)
-{
-    int i;
-    js_limb_t v, carry;
-
-    carry = 1;
-    for(i=0;i<n;i++) {
-        v = ~op2[i] + carry;
-        carry = v < carry;
-        res[i] = v;
-    }
-    return carry;
-}
+/* ported to Zig (quickjs.zig) */
 
 /* tabr[] = taba[] * b + l. Return the high carry */
-static js_limb_t mp_mul1(js_limb_t *tabr, const js_limb_t *taba, js_limb_t n,
-                      js_limb_t b, js_limb_t l)
-{
-    js_limb_t i;
-    js_dlimb_t t;
+/* ported to Zig (quickjs.zig) */
 
-    for(i = 0; i < n; i++) {
-        t = (js_dlimb_t)taba[i] * (js_dlimb_t)b + l;
-        tabr[i] = t;
-        l = t >> JS_LIMB_BITS;
-    }
-    return l;
-}
-
-static js_limb_t mp_div1(js_limb_t *tabr, const js_limb_t *taba, js_limb_t n,
-                      js_limb_t b, js_limb_t r)
-{
-    js_slimb_t i;
-    js_dlimb_t a1;
-    for(i = n - 1; i >= 0; i--) {
-        a1 = ((js_dlimb_t)r << JS_LIMB_BITS) | taba[i];
-        tabr[i] = a1 / b;
-        r = a1 % b;
-    }
-    return r;
-}
+/* ported to Zig (quickjs.zig) */
 
 /* tabr[] += taba[] * b, return the high word. */
-static js_limb_t mp_add_mul1(js_limb_t *tabr, const js_limb_t *taba, js_limb_t n,
-                          js_limb_t b)
-{
-    js_limb_t i, l;
-    js_dlimb_t t;
-
-    l = 0;
-    for(i = 0; i < n; i++) {
-        t = (js_dlimb_t)taba[i] * (js_dlimb_t)b + l + tabr[i];
-        tabr[i] = t;
-        l = t >> JS_LIMB_BITS;
-    }
-    return l;
-}
+/* ported to Zig (quickjs.zig) */
 
 /* size of the result : op1_size + op2_size. */
-static void mp_mul_basecase(js_limb_t *result,
-                            const js_limb_t *op1, js_limb_t op1_size,
-                            const js_limb_t *op2, js_limb_t op2_size)
-{
-    int i;
-    js_limb_t r;
-    
-    result[op1_size] = mp_mul1(result, op1, op1_size, op2[0], 0);
-    for(i=1;i<op2_size;i++) {
-        r = mp_add_mul1(result + i, op1, op1_size, op2[i]);
-        result[i + op1_size] = r;
-    }
-}
+/* ported to Zig (quickjs.zig) */
 
 /* tabr[] -= taba[] * b. Return the value to substract to the high
    word. */
-static js_limb_t mp_sub_mul1(js_limb_t *tabr, const js_limb_t *taba, js_limb_t n,
-                          js_limb_t b)
-{
-    js_limb_t i, l;
-    js_dlimb_t t;
-
-    l = 0;
-    for(i = 0; i < n; i++) {
-        t = tabr[i] - (js_dlimb_t)taba[i] * (js_dlimb_t)b - l;
-        tabr[i] = t;
-        l = -(t >> JS_LIMB_BITS);
-    }
-    return l;
-}
+/* ported to Zig (quickjs.zig) */
 
 /* WARNING: d must be >= 2^(JS_LIMB_BITS-1) */
-static inline js_limb_t udiv1norm_init(js_limb_t d)
-{
-    js_limb_t a0, a1;
-    a1 = -d - 1;
-    a0 = -1;
-    return (((js_dlimb_t)a1 << JS_LIMB_BITS) | a0) / d;
-}
+/* ported to Zig (quickjs.zig) */
 
 /* return the quotient and the remainder in '*pr'of 'a1*2^JS_LIMB_BITS+a0
    / d' with 0 <= a1 < d. */
-static inline js_limb_t udiv1norm(js_limb_t *pr, js_limb_t a1, js_limb_t a0,
-                                js_limb_t d, js_limb_t d_inv)
-{
-    js_limb_t n1m, n_adj, q, r, ah;
-    js_dlimb_t a;
-    n1m = ((js_slimb_t)a0 >> (JS_LIMB_BITS - 1));
-    n_adj = a0 + (n1m & d);
-    a = (js_dlimb_t)d_inv * (a1 - n1m) + n_adj;
-    q = (a >> JS_LIMB_BITS) + a1;
-    /* compute a - q * r and update q so that the remainder is\
-       between 0 and d - 1 */
-    a = ((js_dlimb_t)a1 << JS_LIMB_BITS) | a0;
-    a = a - (js_dlimb_t)q * d - d;
-    ah = a >> JS_LIMB_BITS;
-    q += 1 + ah;
-    r = (js_limb_t)a + (ah & d);
-    *pr = r;
-    return q;
-}
+/* ported to Zig (quickjs.zig) */
 
 #define UDIV1NORM_THRESHOLD 3
 
 /* b must be >= 1 << (JS_LIMB_BITS - 1) */
-static js_limb_t mp_div1norm(js_limb_t *tabr, const js_limb_t *taba, js_limb_t n,
-                          js_limb_t b, js_limb_t r)
-{
-    js_slimb_t i;
-
-    if (n >= UDIV1NORM_THRESHOLD) {
-        js_limb_t b_inv;
-        b_inv = udiv1norm_init(b);
-        for(i = n - 1; i >= 0; i--) {
-            tabr[i] = udiv1norm(&r, r, taba[i], b, b_inv);
-        }
-    } else {
-        js_dlimb_t a1;
-        for(i = n - 1; i >= 0; i--) {
-            a1 = ((js_dlimb_t)r << JS_LIMB_BITS) | taba[i];
-            tabr[i] = a1 / b;
-            r = a1 % b;
-        }
-    }
-    return r;
-}
+/* ported to Zig (quickjs.zig) */
 
 /* base case division: divides taba[0..na-1] by tabb[0..nb-1]. tabb[nb
    - 1] must be >= 1 << (JS_LIMB_BITS - 1). na - nb must be >= 0. 'taba'
    is modified and contains the remainder (nb limbs). tabq[0..na-nb]
    contains the quotient with tabq[na - nb] <= 1. */
-static void mp_divnorm(js_limb_t *tabq, js_limb_t *taba, js_limb_t na,
-                       const js_limb_t *tabb, js_limb_t nb)
-{
-    js_limb_t r, a, c, q, v, b1, b1_inv, n, dummy_r;
-    int i, j;
-
-    b1 = tabb[nb - 1];
-    if (nb == 1) {
-        taba[0] = mp_div1norm(tabq, taba, na, b1, 0);
-        return;
-    }
-    n = na - nb;
-
-    if (n >= UDIV1NORM_THRESHOLD)
-        b1_inv = udiv1norm_init(b1);
-    else
-        b1_inv = 0;
-
-    /* first iteration: the quotient is only 0 or 1 */
-    q = 1;
-    for(j = nb - 1; j >= 0; j--) {
-        if (taba[n + j] != tabb[j]) {
-            if (taba[n + j] < tabb[j])
-                q = 0;
-            break;
-        }
-    }
-    tabq[n] = q;
-    if (q) {
-        mp_sub(taba + n, taba + n, tabb, nb, 0);
-    }
-
-    for(i = n - 1; i >= 0; i--) {
-        if (unlikely(taba[i + nb] >= b1)) {
-            q = -1;
-        } else if (b1_inv) {
-            q = udiv1norm(&dummy_r, taba[i + nb], taba[i + nb - 1], b1, b1_inv);
-        } else {
-            js_dlimb_t al;
-            al = ((js_dlimb_t)taba[i + nb] << JS_LIMB_BITS) | taba[i + nb - 1];
-            q = al / b1;
-            r = al % b1;
-        }
-        r = mp_sub_mul1(taba + i, tabb, nb, q);
-
-        v = taba[i + nb];
-        a = v - r;
-        c = (a > v);
-        taba[i + nb] = a;
-
-        if (c != 0) {
-            /* negative result */
-            for(;;) {
-                q--;
-                c = mp_add(taba + i, taba + i, tabb, nb, 0);
-                /* propagate carry and test if positive result */
-                if (c != 0) {
-                    if (++taba[i + nb] == 0) {
-                        break;
-                    }
-                }
-            }
-        }
-        tabq[i] = q;
-    }
-}
+/* ported to Zig (quickjs.zig) */
 
 /* 1 <= shift <= JS_LIMB_BITS - 1 */
-static js_limb_t mp_shl(js_limb_t *tabr, const js_limb_t *taba, int n,
-                        int shift)
-{
-    int i;
-    js_limb_t l, v;
-    l = 0;
-    for(i = 0; i < n; i++) {
-        v = taba[i];
-        tabr[i] = (v << shift) | l;
-        l = v >> (JS_LIMB_BITS - shift);
-    }
-    return l;
-}
+/* ported to Zig (quickjs.zig) */
 
 /* r = (a + high*B^n) >> shift. Return the remainder r (0 <= r < 2^shift). 
    1 <= shift <= LIMB_BITS - 1 */
-static js_limb_t mp_shr(js_limb_t *tab_r, const js_limb_t *tab, int n,
-                        int shift, js_limb_t high)
-{
-    int i;
-    js_limb_t l, a;
+/* ported to Zig (quickjs.zig) */
 
-    l = high;
-    for(i = n - 1; i >= 0; i--) {
-        a = tab[i];
-        tab_r[i] = (a >> shift) | (l << (JS_LIMB_BITS - shift));
-        l = a;
-    }
-    return l & (((js_limb_t)1 << shift) - 1);
+/* throw shim for quickjs.zig (avoids JSValue return ABI from Zig) */
+void js_bigint_throw_div_zero(JSContext *ctx)
+{
+    JS_ThrowRangeError(ctx, "BigInt division by zero");
 }
 
-static JSBigInt *js_bigint_new(JSContext *ctx, int len)
+JSBigInt *js_bigint_new(JSContext *ctx, int len)
 {
     JSBigInt *r;
     if (len > JS_BIGINT_MAX_SIZE) {
@@ -11656,7 +11428,7 @@ static __maybe_unused void js_bigint_dump(JSContext *ctx, const char *str,
     js_bigint_dump1(ctx, str, p->tab, p->len);
 }
 
-static JSBigInt *js_bigint_new_si(JSContext *ctx, js_slimb_t a)
+JSBigInt *js_bigint_new_si(JSContext *ctx, js_slimb_t a)
 {
     JSBigInt *r;
     r = js_bigint_new(ctx, 1);
@@ -11727,7 +11499,7 @@ static JSBigInt *js_bigint_new_di(JSContext *ctx, js_sdlimb_t a)
 /* Remove redundant high order limbs. Warning: 'a' may be
    reallocated. Can never fail.
 */
-static JSBigInt *js_bigint_normalize1(JSContext *ctx, JSBigInt *a, int l)
+JSBigInt *js_bigint_normalize1(JSContext *ctx, JSBigInt *a, int l)
 {
     js_limb_t v;
 
@@ -11751,7 +11523,7 @@ static JSBigInt *js_bigint_normalize1(JSContext *ctx, JSBigInt *a, int l)
     return a;
 }
 
-static JSBigInt *js_bigint_normalize(JSContext *ctx, JSBigInt *a)
+JSBigInt *js_bigint_normalize(JSContext *ctx, JSBigInt *a)
 {
     return js_bigint_normalize1(ctx, a, a->len);
 }
@@ -11782,7 +11554,7 @@ static js_slimb_t js_bigint_get_si_sat(const JSBigInt *a)
 }
 
 /* add the op1 limb */
-static JSBigInt *js_bigint_extend(JSContext *ctx, JSBigInt *r,
+JSBigInt *js_bigint_extend(JSContext *ctx, JSBigInt *r,
                                   js_limb_t op1)
 {
     int n2 = r->len;
@@ -11808,299 +11580,25 @@ static JSBigInt *js_bigint_extend(JSContext *ctx, JSBigInt *r,
 /* return NULL in case of error. Compute a + b (b_neg = 0) or a - b
    (b_neg = 1) */
 /* XXX: optimize */
-static JSBigInt *js_bigint_add(JSContext *ctx, const JSBigInt *a,
-                               const JSBigInt *b, int b_neg)
-{
-    JSBigInt *r;
-    int n1, n2, i;
-    js_limb_t carry, op1, op2, a_sign, b_sign;
-    
-    n2 = max_int(a->len, b->len);
-    n1 = min_int(a->len, b->len);
-    r = js_bigint_new(ctx, n2);
-    if (!r)
-        return NULL;
-    /* XXX: optimize */
-    /* common part */
-    carry = b_neg;
-    for(i = 0; i < n1; i++) {
-        op1 = a->tab[i];
-        op2 = b->tab[i] ^ (-b_neg);
-        ADDC(r->tab[i], carry, op1, op2, carry);
-    }
-    a_sign = -js_bigint_sign(a);
-    b_sign = (-js_bigint_sign(b)) ^ (-b_neg);
-    /* part with sign extension of one operand  */
-    if (a->len > b->len) {
-        for(i = n1; i < n2; i++) {
-            op1 = a->tab[i];
-            ADDC(r->tab[i], carry, op1, b_sign, carry);
-        }
-    } else if (a->len < b->len) {
-        for(i = n1; i < n2; i++) {
-            op2 = b->tab[i] ^ (-b_neg);
-            ADDC(r->tab[i], carry, a_sign, op2, carry);
-        }
-    }
-
-    /* part with sign extension for both operands. Extend the result
-       if necessary */
-    return js_bigint_extend(ctx, r, a_sign + b_sign + carry);
-}
+/* ported to Zig (quickjs.zig) */
 
 /* XXX: optimize */
-static JSBigInt *js_bigint_neg(JSContext *ctx, const JSBigInt *a)
-{
-    JSBigIntBuf buf;
-    JSBigInt *b;
-    b = js_bigint_set_si(&buf, 0);
-    return js_bigint_add(ctx, b, a, 1);
-}
+/* ported to Zig (quickjs.zig) */
 
-static JSBigInt *js_bigint_mul(JSContext *ctx, const JSBigInt *a,
-                               const JSBigInt *b)
-{
-    JSBigInt *r;
-    
-    r = js_bigint_new(ctx, a->len + b->len);
-    if (!r)
-        return NULL;
-    mp_mul_basecase(r->tab, a->tab, a->len, b->tab, b->len);
-    /* correct the result if negative operands (no overflow is
-       possible) */
-    if (js_bigint_sign(a))
-        mp_sub(r->tab + a->len, r->tab + a->len, b->tab, b->len, 0);
-    if (js_bigint_sign(b))
-        mp_sub(r->tab + b->len, r->tab + b->len, a->tab, a->len, 0);
-    return js_bigint_normalize(ctx, r);
-}
+/* ported to Zig (quickjs.zig) */
 
 /* return the division or the remainder. 'b' must be != 0. return NULL
    in case of exception (division by zero or memory error) */
-static JSBigInt *js_bigint_divrem(JSContext *ctx, const JSBigInt *a,
-                                  const JSBigInt *b, BOOL is_rem)
-{
-    JSBigInt *r, *q;
-    js_limb_t *tabb, h;
-    int na, nb, a_sign, b_sign, shift;
-    
-    if (b->len == 1 && b->tab[0] == 0) {
-        JS_ThrowRangeError(ctx, "BigInt division by zero");
-        return NULL;
-    }
-    
-    a_sign = js_bigint_sign(a);
-    b_sign = js_bigint_sign(b);
-    na = a->len;
-    nb = b->len;
-
-    r = js_bigint_new(ctx, na + 2); 
-    if (!r)
-        return NULL;
-    if (a_sign) {
-        mp_neg(r->tab, a->tab, na);
-    } else {
-        memcpy(r->tab, a->tab, na * sizeof(a->tab[0]));
-    }
-    /* normalize */
-    while (na > 1 && r->tab[na - 1] == 0)
-        na--;
-
-    tabb = js_malloc(ctx, nb * sizeof(tabb[0]));
-    if (!tabb) {
-        js_free(ctx, r);
-        return NULL;
-    }
-    if (b_sign) {
-        mp_neg(tabb, b->tab, nb);
-    } else {
-        memcpy(tabb, b->tab, nb * sizeof(tabb[0]));
-    }
-    /* normalize */
-    while (nb > 1 && tabb[nb - 1] == 0)
-        nb--;
-
-    /* trivial case if 'a' is small */
-    if (na < nb) {
-        js_free(ctx, r);
-        js_free(ctx, tabb);
-        if (is_rem) {
-            /* r = a */
-            r = js_bigint_new(ctx, a->len);
-            if (!r)
-                return NULL;
-            memcpy(r->tab, a->tab, a->len * sizeof(a->tab[0])); 
-            return r;
-        } else {
-            /* q = 0 */
-            return js_bigint_new_si(ctx, 0);
-        }
-    }
-
-    /* normalize 'b' */
-    shift = js_limb_clz(tabb[nb - 1]);
-    if (shift != 0) {
-        mp_shl(tabb, tabb, nb, shift);
-        h = mp_shl(r->tab, r->tab, na, shift);
-        if (h != 0)
-            r->tab[na++] = h;
-    }
-
-    q = js_bigint_new(ctx, na - nb + 2); /* one more limb for the sign */
-    if (!q) {
-        js_free(ctx, r);
-        js_free(ctx, tabb);
-        return NULL;
-    }
-
-    //    js_bigint_dump1(ctx, "a", r->tab, na);
-    //    js_bigint_dump1(ctx, "b", tabb, nb);
-    mp_divnorm(q->tab, r->tab, na, tabb, nb);
-    js_free(ctx, tabb);
-
-    if (is_rem) {
-        js_free(ctx, q);
-        if (shift != 0)
-            mp_shr(r->tab, r->tab, nb, shift, 0);
-        r->tab[nb++] = 0;
-        if (a_sign)
-            mp_neg(r->tab, r->tab, nb);
-        r = js_bigint_normalize1(ctx, r, nb);
-        return r;
-    } else {
-        js_free(ctx, r);
-        q->tab[na - nb + 1] = 0;
-        if (a_sign ^ b_sign) {
-            mp_neg(q->tab, q->tab, q->len);
-        }
-        q = js_bigint_normalize(ctx, q);
-        return q;
-    }
-}
+/* ported to Zig (quickjs.zig) */
 
 /* and, or, xor */
-static JSBigInt *js_bigint_logic(JSContext *ctx, const JSBigInt *a,
-                                 const JSBigInt *b, OPCodeEnum op)
-{
-    JSBigInt *r;
-    js_limb_t b_sign;
-    int a_len, b_len, i;
+/* ported to Zig (quickjs.zig) */
 
-    if (a->len < b->len) {
-        const JSBigInt *tmp;
-        tmp = a;
-        a = b;
-        b = tmp;
-    }
-    /* a_len >= b_len */
-    a_len = a->len;
-    b_len = b->len;
-    b_sign = -js_bigint_sign(b);
+/* ported to Zig (quickjs.zig) */
 
-    r = js_bigint_new(ctx, a_len);
-    if (!r)
-        return NULL;
-    switch(op) {
-    case OP_or:
-        for(i = 0; i < b_len; i++) {
-            r->tab[i] = a->tab[i] | b->tab[i];
-        }
-        for(i = b_len; i < a_len; i++) {
-            r->tab[i] = a->tab[i] | b_sign;
-        }
-        break;
-    case OP_and:
-        for(i = 0; i < b_len; i++) {
-            r->tab[i] = a->tab[i] & b->tab[i];
-        }
-        for(i = b_len; i < a_len; i++) {
-            r->tab[i] = a->tab[i] & b_sign;
-        }
-        break;
-    case OP_xor:
-        for(i = 0; i < b_len; i++) {
-            r->tab[i] = a->tab[i] ^ b->tab[i];
-        }
-        for(i = b_len; i < a_len; i++) {
-            r->tab[i] = a->tab[i] ^ b_sign;
-        }
-        break;
-    default:
-        abort();
-    }
-    return js_bigint_normalize(ctx, r);
-}
+/* ported to Zig (quickjs.zig) */
 
-static JSBigInt *js_bigint_not(JSContext *ctx, const JSBigInt *a)
-{
-    JSBigInt *r;
-    int i;
-    
-    r = js_bigint_new(ctx, a->len);
-    if (!r)
-        return NULL;
-    for(i = 0; i < a->len; i++) {
-        r->tab[i] = ~a->tab[i];
-    }
-    /* no normalization is needed */
-    return r;
-}
-
-static JSBigInt *js_bigint_shl(JSContext *ctx, const JSBigInt *a,
-                               unsigned int shift1)
-{
-    int d, i, shift;
-    JSBigInt *r;
-    js_limb_t l;
-
-    if (a->len == 1 && a->tab[0] == 0)
-        return js_bigint_new_si(ctx, 0); /* zero case */
-    d = shift1 / JS_LIMB_BITS;
-    shift = shift1 % JS_LIMB_BITS;
-    r = js_bigint_new(ctx, a->len + d);
-    if (!r)
-        return NULL;
-    for(i = 0; i < d; i++)
-        r->tab[i] = 0;
-    if (shift == 0) {
-        for(i = 0; i < a->len; i++) {
-            r->tab[i + d] = a->tab[i];
-        }
-    } else {
-        l = mp_shl(r->tab + d, a->tab, a->len, shift);
-        if (js_bigint_sign(a))
-            l |= (js_limb_t)(-1) << shift;
-        r = js_bigint_extend(ctx, r, l);
-    }
-    return r;
-}
-
-static JSBigInt *js_bigint_shr(JSContext *ctx, const JSBigInt *a,
-                               unsigned int shift1)
-{
-    int d, i, shift, a_sign, n1;
-    JSBigInt *r;
-
-    d = shift1 / JS_LIMB_BITS;
-    shift = shift1 % JS_LIMB_BITS;
-    a_sign = js_bigint_sign(a);
-    if (d >= a->len)
-        return js_bigint_new_si(ctx, -a_sign);
-    n1 = a->len - d;
-    r = js_bigint_new(ctx, n1);
-    if (!r)
-        return NULL;
-    if (shift == 0) {
-        for(i = 0; i < n1; i++) {
-            r->tab[i] = a->tab[i + d];
-        }
-        /* no normalization is needed */
-    } else {
-        mp_shr(r->tab, a->tab + d, n1, shift, -a_sign);
-        r = js_bigint_normalize(ctx, r);
-    }
-    return r;
-}
+/* ported to Zig (quickjs.zig) */
 
 static JSBigInt *js_bigint_pow(JSContext *ctx, const JSBigInt *a, JSBigInt *b)
 {
@@ -12247,11 +11745,7 @@ static uint64_t js_bigint_get_mant_exp(JSContext *ctx,
 }
 
 /* shift left with round to nearest, ties to even. n >= 1 */
-static uint64_t shr_rndn(uint64_t a, int n)
-{
-    uint64_t addend = ((a >> n) & 1) + ((1 << (n - 1)) - 1);
-    return (a + addend) >> n;
-}
+/* ported to Zig (quickjs.zig) */
 
 /* convert to float64 with round to nearest, ties to even. Return
    +/-infinity if too large. */
@@ -12390,36 +11884,7 @@ static int js_bigint_float64_cmp(JSContext *ctx, const JSBigInt *a,
 }
 
 /* return -1, 0 or 1 */
-static int js_bigint_cmp(JSContext *ctx, const JSBigInt *a,
-                         const JSBigInt *b)
-{
-    int a_sign, b_sign, res, i;
-    a_sign = js_bigint_sign(a);
-    b_sign = js_bigint_sign(b);
-    if (a_sign != b_sign) {
-        res = 1 - 2 * a_sign;
-    } else {
-        /* we assume the numbers are normalized */
-        if (a->len != b->len) {
-            if (a->len < b->len)
-                res = 2 * a_sign - 1;
-            else
-                res = 1 - 2 * a_sign;
-        } else {
-            res = 0;
-            for(i = a->len -1; i >= 0; i--) {
-                if (a->tab[i] != b->tab[i]) {
-                    if (a->tab[i] < b->tab[i])
-                        res = -1;
-                    else
-                        res = 1;
-                    break;
-                }
-            }
-        }
-    }
-    return res;
-}
+/* ported to Zig (quickjs.zig) */
 
 /* contains 10^i */
 static const js_limb_t js_pow_dec[JS_LIMB_DIGITS + 1] = {
@@ -13484,11 +12949,7 @@ static __exception int JS_ToArrayLengthFree(JSContext *ctx, uint32_t *plen,
 
 #define MAX_SAFE_INTEGER (((int64_t)1 << 53) - 1)
 
-static BOOL is_safe_integer(double d)
-{
-    return isfinite(d) && floor(d) == d &&
-        fabs(d) <= (double)MAX_SAFE_INTEGER;
-}
+/* ported to Zig (quickjs.zig) */
 
 int JS_ToIndex(JSContext *ctx, uint64_t *plen, JSValueConst val)
 {
@@ -14565,15 +14026,7 @@ int JS_IsArray(JSContext *ctx, JSValueConst val)
     }
 }
 
-static double js_pow(double a, double b)
-{
-    if (unlikely(!isfinite(b)) && fabs(a) == 1) {
-        /* not compatible with IEEE 754 */
-        return JS_FLOAT64_NAN;
-    } else {
-        return pow(a, b);
-    }
-}
+/* ported to Zig (quickjs.zig) */
 
 JSValue JS_NewBigInt64(JSContext *ctx, int64_t v)
 {
@@ -22160,25 +21613,7 @@ static void __attribute((unused)) dump_token(JSParseState *s,
 
 /* return the zero based line and column number in the source. */
 /* Note: we no longer support '\r' as line terminator */
-static int get_line_col(int *pcol_num, const uint8_t *buf, size_t len)
-{
-    int line_num, col_num, c;
-    size_t i;
-    
-    line_num = 0;
-    col_num = 0;
-    for(i = 0; i < len; i++) {
-        c = buf[i];
-        if (c == '\n') {
-            line_num++;
-            col_num = 0;
-        } else if (c < 0x80 || c >= 0xc0) {
-            col_num++;
-        }
-    }
-    *pcol_num = col_num;
-    return line_num;
-}
+/* ported to Zig (quickjs.zig) */
 
 static int get_line_col_cached(GetLineColCache *s, int *pcol_num, const uint8_t *ptr)
 {
@@ -23641,30 +23076,7 @@ static int peek_token(JSParseState *s, BOOL no_line_terminator)
     return simple_next_token(&p, no_line_terminator);
 }
 
-static void skip_shebang(const uint8_t **pp, const uint8_t *buf_end)
-{
-    const uint8_t *p = *pp;
-    int c;
-
-    if (p[0] == '#' && p[1] == '!') {
-        p += 2;
-        while (p < buf_end) {
-            if (*p == '\n' || *p == '\r') {
-                break;
-            } else if (*p >= 0x80) {
-                c = unicode_from_utf8(p, UTF8_CHAR_LEN_MAX, &p);
-                if (c == CP_LS || c == CP_PS) {
-                    break;
-                } else if (c == -1) {
-                    p++; /* skip invalid UTF-8 */
-                }
-            } else {
-                p++;
-            }
-        }
-        *pp = p;
-    }
-}
+/* ported to Zig (quickjs.zig) */
 
 /* return true if 'input' contains the source of a module
    (heuristic). 'input' must be a zero terminated.
@@ -24492,13 +23904,21 @@ static __exception int js_parse_template(JSParseState *s, int call, int *argc)
 
 #define PROP_TYPE_PRIVATE (1 << 4)
 
-static BOOL token_is_ident(int tok)
-{
-    /* Accept keywords and reserved words as property names */
-    return (tok == TOK_IDENT ||
-            (tok >= TOK_FIRST_KEYWORD &&
-             tok <= TOK_LAST_KEYWORD));
-}
+/* Token enum values exported for quickjs.zig (no drift). */
+const int zig_TOK_IDENT = TOK_IDENT;
+const int zig_TOK_FIRST_KEYWORD = TOK_FIRST_KEYWORD;
+const int zig_TOK_LAST_KEYWORD = TOK_LAST_KEYWORD;
+const int zig_TOK_NUMBER = TOK_NUMBER;
+const int zig_TOK_STRING = TOK_STRING;
+const int zig_TOK_REGEXP = TOK_REGEXP;
+const int zig_TOK_DEC = TOK_DEC;
+const int zig_TOK_INC = TOK_INC;
+const int zig_TOK_NULL = TOK_NULL;
+const int zig_TOK_FALSE = TOK_FALSE;
+const int zig_TOK_TRUE = TOK_TRUE;
+const int zig_TOK_THIS = TOK_THIS;
+
+/* ported to Zig (quickjs.zig) */
 
 /* if the property is an expression, name = JS_ATOM_NULL */
 static int __exception js_parse_property_name(JSParseState *s,
@@ -24640,42 +24060,13 @@ static __exception int js_parse_seek_token(JSParseState *s, const JSParsePos *sp
 }
 
 /* return TRUE if a regexp literal is allowed after this token */
-static BOOL is_regexp_allowed(int tok)
-{
-    switch (tok) {
-    case TOK_NUMBER:
-    case TOK_STRING:
-    case TOK_REGEXP:
-    case TOK_DEC:
-    case TOK_INC:
-    case TOK_NULL:
-    case TOK_FALSE:
-    case TOK_TRUE:
-    case TOK_THIS:
-    case ')':
-    case ']':
-    case '}': /* XXX: regexp may occur after */
-    case TOK_IDENT:
-        return FALSE;
-    default:
-        return TRUE;
-    }
-}
+/* ported to Zig (quickjs.zig) */
 
 #define SKIP_HAS_SEMI       (1 << 0)
 #define SKIP_HAS_ELLIPSIS   (1 << 1)
 #define SKIP_HAS_ASSIGNMENT (1 << 2)
 
-static BOOL has_lf_in_range(const uint8_t *p1, const uint8_t *p2)
-{
-    const uint8_t *tmp;
-    if (p1 > p2) {
-        tmp = p1;
-        p1 = p2;
-        p2 = tmp;
-    }
-    return (memchr(p1, '\n', p2 - p1) != NULL);
-}
+/* ported to Zig (quickjs.zig) */
 
 /* XXX: improve speed with early bailout */
 /* XXX: no longer works if regexps are present. Could use previous
@@ -32642,33 +32033,24 @@ static int get_closure_var(JSContext *ctx, JSFunctionDef *s,
                            is_const, is_lexical, var_kind);
 }
 
-static int get_with_scope_opcode(int op)
-{
-    if (op == OP_scope_get_var_undef)
-        return OP_with_get_var;
-    else
-        return OP_with_get_var + (op - OP_scope_get_var);
-}
+/* ported to Zig (quickjs.zig) */
 
-static BOOL can_opt_put_ref_value(const uint8_t *bc_buf, int pos)
-{
-    int opcode = bc_buf[pos];
-    return (bc_buf[pos + 1] == OP_put_ref_value &&
-            (opcode == OP_insert3 ||
-             opcode == OP_perm4 ||
-             opcode == OP_nop ||
-             opcode == OP_rot3l));
-}
+/* ported to Zig (quickjs.zig) */
 
-static BOOL can_opt_put_global_ref_value(const uint8_t *bc_buf, int pos)
-{
-    int opcode = bc_buf[pos];
-    return (bc_buf[pos + 1] == OP_put_ref_value &&
-            (opcode == OP_insert3 ||
-             opcode == OP_perm4 ||
-             opcode == OP_nop ||
-             opcode == OP_rot3l));
-}
+/* ported to Zig (quickjs.zig) */
+
+/* Opcode enum values exported for quickjs.zig (no drift). */
+const int zig_OP_scope_get_var_undef = OP_scope_get_var_undef;
+const int zig_OP_with_get_var = OP_with_get_var;
+const int zig_OP_scope_get_var = OP_scope_get_var;
+const int zig_OP_put_ref_value = OP_put_ref_value;
+const int zig_OP_insert3 = OP_insert3;
+const int zig_OP_perm4 = OP_perm4;
+const int zig_OP_nop = OP_nop;
+const int zig_OP_rot3l = OP_rot3l;
+const int zig_OP_or = OP_or;
+const int zig_OP_and = OP_and;
+const int zig_OP_xor = OP_xor;
 
 static int optimize_scope_make_ref(JSContext *ctx, JSFunctionDef *s,
                                    DynBuf *bc, uint8_t *bc_buf,
@@ -37476,11 +36858,7 @@ static void bc_put_sleb128(BCWriterState *s, int32_t v)
     dbuf_put_sleb128(&s->dbuf, v);
 }
 
-static void bc_set_flags(uint32_t *pflags, int *pidx, uint32_t val, int n)
-{
-    *pflags = *pflags | (val << *pidx);
-    *pidx += n;
-}
+/* ported to Zig (quickjs.zig) */
 
 static int bc_atom_to_idx(BCWriterState *s, uint32_t *pres, JSAtom atom)
 {
@@ -38486,14 +37864,7 @@ static JSString *JS_ReadString(BCReaderState *s)
     return p;
 }
 
-static uint32_t bc_get_flags(uint32_t flags, int *pidx, int n)
-{
-    uint32_t val;
-    /* XXX: this does not work for n == 32 */
-    val = (flags >> *pidx) & ((1U << n) - 1);
-    *pidx += n;
-    return val;
-}
+/* ported to Zig (quickjs.zig) */
 
 static int JS_ReadFunctionBytecode(BCReaderState *s, JSFunctionBytecode *b,
                                    int byte_code_offset, uint32_t bc_len)
@@ -46695,32 +46066,10 @@ int JS_AddIntrinsicStringNormalize(JSContext *ctx)
 /* Math */
 
 /* precondition: a and b are not NaN */
-static double js_fmin(double a, double b)
-{
-    if (a == 0 && b == 0) {
-        JSFloat64Union a1, b1;
-        a1.d = a;
-        b1.d = b;
-        a1.u64 |= b1.u64;
-        return a1.d;
-    } else {
-        return fmin(a, b);
-    }
-}
+/* ported to Zig (quickjs.zig) */
 
 /* precondition: a and b are not NaN */
-static double js_fmax(double a, double b)
-{
-    if (a == 0 && b == 0) {
-        JSFloat64Union a1, b1;
-        a1.d = a;
-        b1.d = b;
-        a1.u64 &= b1.u64;
-        return a1.d;
-    } else {
-        return fmax(a, b);
-    }
-}
+/* ported to Zig (quickjs.zig) */
 
 static JSValue js_math_min_max(JSContext *ctx, JSValueConst this_val,
                                int argc, JSValueConst *argv, int magic)
@@ -46775,43 +46124,9 @@ static JSValue js_math_min_max(JSContext *ctx, JSValueConst this_val,
     }
 }
 
-static double js_math_sign(double a)
-{
-    if (isnan(a) || a == 0.0)
-        return a;
-    if (a < 0)
-        return -1;
-    else
-        return 1;
-}
+/* ported to Zig (quickjs.zig) */
 
-static double js_math_round(double a)
-{
-    JSFloat64Union u;
-    uint64_t frac_mask, one;
-    unsigned int e, s;
-
-    u.d = a;
-    e = (u.u64 >> 52) & 0x7ff;
-    if (e < 1023) {
-        /* abs(a) < 1 */
-        if (e == (1023 - 1) && u.u64 != 0xbfe0000000000000) {
-            /* abs(a) > 0.5 or a = 0.5: return +/-1.0 */
-            u.u64 = (u.u64 & ((uint64_t)1 << 63)) | ((uint64_t)1023 << 52);
-        } else {
-            /* return +/-0.0 */
-            u.u64 &= (uint64_t)1 << 63;
-        }
-    } else if (e < (1023 + 52)) {
-        s = u.u64 >> 63;
-        one = (uint64_t)1 << (52 - (e - 1023));
-        frac_mask = one - 1;
-        u.u64 += (one >> 1) - s;
-        u.u64 &= ~frac_mask; /* truncate to an integer */
-    }
-    /* otherwise: abs(a) >= 2^52, or NaN, +/-Infinity: no change */
-    return u.d;
-}
+/* ported to Zig (quickjs.zig) */
 
 static JSValue js_math_hypot(JSContext *ctx, JSValueConst this_val,
                              int argc, JSValueConst *argv)
@@ -46842,10 +46157,7 @@ static double js_math_f16round(double a)
     return fromfp16(tofp16(a));
 }
 
-static double js_math_fround(double a)
-{
-    return (float)a;
-}
+/* ported to Zig (quickjs.zig) */
 
 static JSValue js_math_imul(JSContext *ctx, JSValueConst this_val,
                             int argc, JSValueConst *argv)
@@ -49649,13 +48961,7 @@ static JSValue js_json_isRawJSON(JSContext *ctx, JSValueConst this_val,
     }
 }
 
-static BOOL is_valid_raw_json_char(int c)
-{
-    return ((c >= 'a' && c <= 'z') ||
-            (c >= '0' && c <= '9') ||
-            c == '-' || 
-            c == '"');
-}
+/* ported to Zig (quickjs.zig) */
 
 static JSValue js_json_rawJSON(JSContext *ctx, JSValueConst this_val,
                                  int argc, JSValueConst *argv)
@@ -54785,17 +54091,9 @@ static const JSCFunctionListEntry js_global_funcs[] = {
 
 /* Date */
 
-static int64_t math_mod(int64_t a, int64_t b) {
-    /* return positive modulo */
-    int64_t m = a % b;
-    return m + (m < 0) * b;
-}
+/* ported to Zig (quickjs.zig) */
 
-static int64_t floor_div(int64_t a, int64_t b) {
-    /* integer division rounding toward -Infinity */
-    int64_t m = a % b;
-    return (a - (m + (m < 0) * b)) / b;
-}
+/* ported to Zig (quickjs.zig) */
 
 static JSValue js_Date_parse(JSContext *ctx, JSValueConst this_val,
                              int argc, JSValueConst *argv);
